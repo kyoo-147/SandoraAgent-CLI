@@ -1,0 +1,16 @@
+{
+  "name": "navin-terminal",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Navin Research terminal chat MVP built on Pi",
+  "scripts": {
+    "start": "node start.mjs",
+    "chat": "node start.mjs",
+    "check": "node --check start.mjs"
+  },
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "latest",
+    "pngjs": "^7.0.0"
+  }
+}
