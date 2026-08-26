@@ -22,7 +22,7 @@ const colors = {
   error: `${CSI}38;2;255;137;125m`,
 };
 
-const DISPLAY_MODEL = "SANDORA 2.5 COMPUTER USE";
+const DISPLAY_MODEL = "SANDORA 2.5 9B COMPUTER USE";
 const DISPLAY_CONTEXT_WINDOW = 261_000;
 const ASCII_LOGO = [
   "        ╭──╮        ",
