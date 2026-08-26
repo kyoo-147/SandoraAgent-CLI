@@ -62,7 +62,10 @@ function buildLogo(targetWidth) {
   const outWidth = Math.max(12, Math.min(targetWidth, sourceWidth));
   // Preserve the source aspect ratio. Do not stretch the mark to fill the
   // header: the right-hand loop is part of the identity and must stay intact.
-  const outHeight = Math.max(2, Math.round(sourceHeight * outWidth / sourceWidth));
+  // A half-block cell carries two vertical samples but is roughly twice as
+  // tall as it is wide on screen. Compensate for that geometry so a square
+  // source stays square instead of becoming a narrow, blocky mark.
+  const outHeight = Math.max(2, Math.round(sourceHeight * outWidth / sourceWidth / 2));
   const pixel = (x, y) => {
     const sourceX = left + (x + 0.5) * sourceWidth / outWidth - 0.5;
     const sourceY = top + (y + 0.5) * sourceHeight / outHeight - 0.5;
@@ -77,7 +80,7 @@ function buildLogo(targetWidth) {
     const c = rgbaPixel(image, x0, y1);
     const d = rgbaPixel(image, x1, y1);
     const mix = (key) => (a[key] * (1 - fx) + b[key] * fx) * (1 - fy) + (c[key] * (1 - fx) + d[key] * fx) * fy;
-    return { r: Math.round(mix("r")), g: Math.round(mix("g")), b: Math.round(mix("b")), alpha: Math.max(a.alpha, b.alpha, c.alpha, d.alpha) };
+    return { r: Math.round(mix("r")), g: Math.round(mix("g")), b: Math.round(mix("b")), alpha: mix("alpha") };
   };
   const rows = [];
   for (let y = 0; y < outHeight; y += 2) {
@@ -284,7 +287,9 @@ function render() {
   const inner = w - 4;
   const lines = [];
   lines.push(`${colors.line}╭${"─".repeat(w - 2)}╮${RESET}`);
-  const desiredHeaderLogoWidth = 8;
+  // Sixteen horizontal samples preserve the rounded right loop while the
+  // aspect compensation above keeps the logo within the four-row header.
+  const desiredHeaderLogoWidth = 16;
   if (headerLogoWidth !== desiredHeaderLogoWidth) {
     headerLogoLines = buildLogo(desiredHeaderLogoWidth);
     headerLogoWidth = desiredHeaderLogoWidth;
