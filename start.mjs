@@ -62,10 +62,10 @@ function buildLogo(targetWidth) {
   const outWidth = Math.max(12, Math.min(targetWidth, sourceWidth));
   // Preserve the source aspect ratio. Do not stretch the mark to fill the
   // header: the right-hand loop is part of the identity and must stay intact.
-  // A half-block cell carries two vertical samples but is roughly twice as
-  // tall as it is wide on screen. Compensate for that geometry so a square
-  // source stays square instead of becoming a narrow, blocky mark.
-  const outHeight = Math.max(2, Math.round(sourceHeight * outWidth / sourceWidth / 2));
+  // Preserve the cropped artwork's native proportions. Half-block rendering
+  // already packs two vertical samples into each terminal row; applying a
+  // second correction here would flatten the mark horizontally.
+  const outHeight = Math.max(2, Math.round(sourceHeight * outWidth / sourceWidth));
   const pixel = (x, y) => {
     const sourceX = left + (x + 0.5) * sourceWidth / outWidth - 0.5;
     const sourceY = top + (y + 0.5) * sourceHeight / outHeight - 0.5;
@@ -287,8 +287,8 @@ function render() {
   const inner = w - 4;
   const lines = [];
   lines.push(`${colors.line}╭${"─".repeat(w - 2)}╮${RESET}`);
-  // Sixteen horizontal samples preserve the rounded right loop while the
-  // aspect compensation above keeps the logo within the four-row header.
+  // Sixteen horizontal samples give the smaller right loop enough detail.
+  // The header grows by one row when needed rather than flattening the image.
   const desiredHeaderLogoWidth = 16;
   if (headerLogoWidth !== desiredHeaderLogoWidth) {
     headerLogoLines = buildLogo(desiredHeaderLogoWidth);
@@ -300,9 +300,9 @@ function render() {
     `${colors.dim}session  ${RESET}${colors.muted}${session.sessionId.slice(0, 12)}${RESET}`,
     `${colors.dim}model    ${RESET}${colors.acid}${DISPLAY_MODEL}${RESET}  ${colors.dim}layout${RESET} ${colors.muted}${layoutMode()}${RESET}`,
   ];
-  for (let i = 0; i < headerInfo.length; i++) {
+  for (let i = 0; i < Math.max(headerInfo.length, headerLogoLines.length); i++) {
     const logo = headerLogoLines[i] || " ".repeat(headerLogoWidth);
-    lines.push(boxLine(`${logo}  ${headerInfo[i]}`));
+    lines.push(boxLine(`${logo}  ${headerInfo[i] || ""}`));
   }
   lines.push(`${colors.line}╰${"─".repeat(w - 2)}╯${RESET}`);
   lines.push("");
