@@ -2,7 +2,7 @@
 
 Terminal chat agent của chúng tôi, với identity hiển thị `Navin Sandora` và model label `Sandora 2.5 Computer Use`.
 
-> **Development status:** Sandora 2.5 Computer Use sắp được cập nhật. Tên model hiện là nhãn sản phẩm; capability đang bật trong MVP là chat-only.
+> **Development status:** Sandora 2.5 Computer Use sắp được cập nhật. Tên model hiện là nhãn sản phẩm; computer-use chưa bật trong MVP, nhưng coding/research tools trong workspace đã được bật.
 
 ## Architecture
 
@@ -37,8 +37,9 @@ npm start -- --model openai/gpt-5
 - Header, welcome view, logo PNG truecolor và responsive resize
 - Status lifecycle: connecting, thinking, typing, complete, error
 - Slash command palette và research prompt commands
-- Chat-only: tắt tools, extensions, skills, prompt templates và context files
-- Không sửa file, không chạy command
+- Delegates up to four independent read-only subagents in parallel
+- Workspace tools: đọc/tìm/sửa file, chạy PowerShell, build/test và Git
+- Tự quan sát output, chẩn đoán lỗi và tiếp tục sửa trong cùng request
 - Giữ session theo cơ chế của Pi
 
 ## Quyết định kiến trúc

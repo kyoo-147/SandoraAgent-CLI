@@ -3,14 +3,16 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Navin Research terminal chat MVP built on Pi",
+  "description": "Sandora autonomous coding and research agent built on Pi",
   "scripts": {
     "start": "node start.mjs",
     "chat": "node start.mjs",
-    "check": "node --check start.mjs"
+    "check": "node --check start.mjs && node --check src/subagents.mjs",
+    "test": "node --test"
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "latest",
-    "pngjs": "^7.0.0"
+    "pngjs": "^7.0.0",
+    "typebox": "^1.3.19"
   }
 }
