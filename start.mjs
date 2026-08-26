@@ -62,7 +62,22 @@ function buildLogo(targetWidth) {
   // Preserve the source aspect ratio. Do not stretch the mark to fill the
   // header: the right-hand loop is part of the identity and must stay intact.
   const outHeight = Math.max(2, Math.round(sourceHeight * outWidth / sourceWidth));
-  const pixel = (x, y) => rgbaPixel(image, Math.min(right, left + Math.floor(x * sourceWidth / outWidth)), Math.min(bottom, top + Math.floor(y * sourceHeight / outHeight)));
+  const pixel = (x, y) => {
+    const sourceX = left + (x + 0.5) * sourceWidth / outWidth - 0.5;
+    const sourceY = top + (y + 0.5) * sourceHeight / outHeight - 0.5;
+    const x0 = Math.max(left, Math.floor(sourceX));
+    const y0 = Math.max(top, Math.floor(sourceY));
+    const x1 = Math.min(right, x0 + 1);
+    const y1 = Math.min(bottom, y0 + 1);
+    const fx = Math.max(0, Math.min(1, sourceX - x0));
+    const fy = Math.max(0, Math.min(1, sourceY - y0));
+    const a = rgbaPixel(image, x0, y0);
+    const b = rgbaPixel(image, x1, y0);
+    const c = rgbaPixel(image, x0, y1);
+    const d = rgbaPixel(image, x1, y1);
+    const mix = (key) => (a[key] * (1 - fx) + b[key] * fx) * (1 - fy) + (c[key] * (1 - fx) + d[key] * fx) * fy;
+    return { r: Math.round(mix("r")), g: Math.round(mix("g")), b: Math.round(mix("b")), alpha: Math.max(a.alpha, b.alpha, c.alpha, d.alpha) };
+  };
   const rows = [];
   for (let y = 0; y < outHeight; y += 2) {
     let row = "";
