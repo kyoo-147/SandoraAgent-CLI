@@ -523,7 +523,6 @@ function shutdown() {
 }
 
 process.stdout.write(`${CSI}?1049h${CSI}?25l`);
-process.stdout.write(`${CSI}?1049h${CSI}?25l`);
 process.stdout.on("resize", () => {
   previousSize = "";
   render();
