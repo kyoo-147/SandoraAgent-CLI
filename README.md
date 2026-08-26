@@ -37,6 +37,7 @@ npm start -- --model openai/gpt-5
 - Header, welcome view, logo PNG truecolor và responsive resize
 - Status lifecycle: connecting, thinking, typing, complete, error
 - Slash command palette và research prompt commands
+- Delegates up to four independent read-only subagents in parallel
 - Workspace tools: đọc/tìm/sửa file, chạy PowerShell, build/test và Git
 - Tự quan sát output, chẩn đoán lỗi và tiếp tục sửa trong cùng request
 - Giữ session theo cơ chế của Pi

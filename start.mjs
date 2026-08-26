@@ -4,6 +4,7 @@ import fs from "node:fs";
 import { join } from "node:path";
 import { PNG } from "pngjs";
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager } from "@earendil-works/pi-coding-agent";
+import { delegateSubagentsTool } from "./src/subagents.mjs";
 
 const cwd = process.cwd();
 const CSI = "\x1b[";
@@ -163,8 +164,9 @@ const { session } = await createAgentSession({
   modelRuntime,
   resourceLoader: loader,
   tools: process.platform === "win32"
-    ? ["read", "write", "edit", "grep", "find", "ls", "powershell"]
-    : ["read", "write", "edit", "grep", "find", "ls", "bash"],
+    ? ["read", "write", "edit", "grep", "find", "ls", "powershell", "delegate_subagents"]
+    : ["read", "write", "edit", "grep", "find", "ls", "bash", "delegate_subagents"],
+  customTools: [delegateSubagentsTool],
   sessionManager: SessionManager.create(cwd),
 });
 
@@ -394,7 +396,7 @@ function submit(text) {
   if (text === "/quit" || text === "/exit") return shutdown();
   const displayText = text;
   if (text === "/tools") {
-    state.messages.push({ role: "assistant", text: "Available capabilities\n• Read and search repository files\n• Create, edit, and delete files\n• Run PowerShell commands, builds, and tests\n• Inspect failures and repair them\n• Inspect Git status, diff, history, branches, commits, and pushes\n\nBrowser/computer-use tools are not enabled yet." });
+    state.messages.push({ role: "assistant", text: "Available capabilities\n• Read and search repository files\n• Create, edit, and delete files\n• Run PowerShell commands, builds, and tests\n• Inspect failures and repair them\n• Inspect Git status, diff, history, branches, commits, and pushes\n• Delegate up to four independent read-only subagents in parallel\n\nBrowser/computer-use tools are not enabled yet." });
     state.input = "";
     state.cursor = 0;
     render();
