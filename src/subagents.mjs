@@ -12,7 +12,7 @@ const WORKER_TIMEOUT_MS = 120_000;
 const MAX_OUTPUT = 20_000;
 
 function workerEnvironment() {
-  const allowed = /^(PATH|PATHEXT|SystemRoot|WINDIR|HOME|USERPROFILE|APPDATA|LOCALAPPDATA|TEMP|TMP|PI_OFFLINE$|.*_API_KEY$|.*_TOKEN$)/;
+  const allowed = /^(PATH|PATHEXT|SystemRoot|WINDIR|HOME|USERPROFILE|APPDATA|LOCALAPPDATA|TEMP|TMP|PI_OFFLINE$)/;
   return Object.fromEntries(Object.entries(process.env).filter(([key]) => allowed.test(key)));
 }
 
@@ -34,26 +34,35 @@ function runSubagent(task, cwd, index, signal) {
     let stdout = "";
     let stderr = "";
     let settled = false;
+    let terminationReason = "";
+    let killFallback;
     const finish = (text) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      clearTimeout(killFallback);
       signal?.removeEventListener("abort", onAbort);
       resolve(text);
     };
     const onAbort = () => {
+      terminationReason = "cancelled";
       terminate(child);
-      finish(`WORKER ${index + 1} · cancelled`);
+      killFallback = setTimeout(() => finish(`WORKER ${index + 1} · cancelled (process did not exit promptly)`), 5_000);
     };
     const timer = setTimeout(() => {
+      terminationReason = `timed out after ${WORKER_TIMEOUT_MS / 1000}s`;
       terminate(child);
-      finish(`WORKER ${index + 1} · timed out after ${WORKER_TIMEOUT_MS / 1000}s`);
+      killFallback = setTimeout(() => finish(`WORKER ${index + 1} · ${terminationReason} (process did not exit promptly)`), 5_000);
     }, WORKER_TIMEOUT_MS);
     signal?.addEventListener("abort", onAbort, { once: true });
     child.stdout.on("data", (chunk) => { stdout = `${stdout}${chunk}`.slice(-MAX_OUTPUT); });
     child.stderr.on("data", (chunk) => { stderr = `${stderr}${chunk}`.slice(-MAX_OUTPUT); });
     child.on("error", (error) => finish(`WORKER ${index + 1} · failed to start: ${error.message}`));
     child.on("close", (code) => {
+      if (terminationReason) {
+        finish(`WORKER ${index + 1} · ${terminationReason}; process exited ${code ?? "unknown"}`);
+        return;
+      }
       const result = stdout.trim() || stderr.trim() || "(worker returned no text)";
       finish(`WORKER ${index + 1} · exit ${code ?? "unknown"}\n${result}`);
     });

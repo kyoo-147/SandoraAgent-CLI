@@ -456,9 +456,9 @@ function submit(text) {
   void session.prompt(text).catch((error) => {
     state.error = error instanceof Error ? error.message : String(error);
   }).finally(() => {
-    if (state.abortRequested) return;
     stopActivityTicker();
     state.streaming = false;
+    state.abortRequested = false;
     state.status = "READY";
     state.activity = "";
     render();
@@ -541,12 +541,6 @@ process.stdin.on("data", (data) => {
       render();
       void session.abort().catch((error) => {
         state.error = error instanceof Error ? error.message : String(error);
-      }).finally(() => {
-        stopActivityTicker();
-        state.streaming = false;
-        state.abortRequested = false;
-        state.status = "READY";
-        state.activity = "";
         render();
       });
     } else shutdown();
