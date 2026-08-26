@@ -1,5 +1,5 @@
 import process from "node:process";
-import { spawn } from "node:child_process";
+import { spawn, execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { Type } from "typebox";
@@ -7,21 +7,55 @@ import { defineTool } from "@earendil-works/pi-coding-agent";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const piEntry = join(root, "node_modules", "@earendil-works", "pi-coding-agent", "dist", "bundle", "cli.js");
+const MAX_WORKERS = 4;
+const WORKER_TIMEOUT_MS = 120_000;
+const MAX_OUTPUT = 20_000;
 
-function runSubagent(task, cwd, index) {
+function workerEnvironment() {
+  const allowed = /^(PATH|PATHEXT|SystemRoot|WINDIR|HOME|USERPROFILE|APPDATA|LOCALAPPDATA|TEMP|TMP|PI_OFFLINE$|.*_API_KEY$|.*_TOKEN$)/;
+  return Object.fromEntries(Object.entries(process.env).filter(([key]) => allowed.test(key)));
+}
+
+function terminate(child) {
+  if (!child.pid) return;
+  if (process.platform === "win32") {
+    execFile("taskkill", ["/pid", String(child.pid), "/t", "/f"], () => {});
+  } else {
+    child.kill("SIGTERM");
+  }
+}
+
+function runSubagent(task, cwd, index, signal) {
   return new Promise((resolve) => {
     const args = process.platform === "win32"
-      ? [piEntry, "--no-session", "--print", "--tools", "read,grep,find,ls,powershell", "--", task]
-      : [piEntry, "--no-session", "--print", "--tools", "read,grep,find,ls,bash", "--", task];
-    const child = spawn(process.execPath, args, { cwd, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+      ? [piEntry, "--no-session", "--no-extensions", "--no-context-files", "--no-skills", "--no-prompt-templates", "--print", "--tools", "read,grep,find,ls", "--", task]
+      : [piEntry, "--no-session", "--no-extensions", "--no-context-files", "--no-skills", "--no-prompt-templates", "--print", "--tools", "read,grep,find,ls", "--", task];
+    const child = spawn(process.execPath, args, { cwd, env: workerEnvironment(), stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
     let stdout = "";
     let stderr = "";
-    child.stdout.on("data", (chunk) => { stdout += chunk; });
-    child.stderr.on("data", (chunk) => { stderr += chunk; });
-    child.on("error", (error) => resolve(`Worker ${index + 1} failed to start: ${error.message}`));
+    let settled = false;
+    const finish = (text) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      resolve(text);
+    };
+    const onAbort = () => {
+      terminate(child);
+      finish(`WORKER ${index + 1} · cancelled`);
+    };
+    const timer = setTimeout(() => {
+      terminate(child);
+      finish(`WORKER ${index + 1} · timed out after ${WORKER_TIMEOUT_MS / 1000}s`);
+    }, WORKER_TIMEOUT_MS);
+    signal?.addEventListener("abort", onAbort, { once: true });
+    child.stdout.on("data", (chunk) => { stdout = `${stdout}${chunk}`.slice(-MAX_OUTPUT); });
+    child.stderr.on("data", (chunk) => { stderr = `${stderr}${chunk}`.slice(-MAX_OUTPUT); });
+    child.on("error", (error) => finish(`WORKER ${index + 1} · failed to start: ${error.message}`));
     child.on("close", (code) => {
       const result = stdout.trim() || stderr.trim() || "(worker returned no text)";
-      resolve(`WORKER ${index + 1} · exit ${code ?? "unknown"}\n${result}`);
+      finish(`WORKER ${index + 1} · exit ${code ?? "unknown"}\n${result}`);
     });
   });
 }
@@ -29,12 +63,12 @@ function runSubagent(task, cwd, index) {
 export const delegateSubagentsTool = defineTool({
   name: "delegate_subagents",
   label: "Delegate subagents",
-  description: "Run up to four independent read-only research, codebase exploration, debugging, testing, or review tasks in parallel. Workers must not edit files, commit, push, or deploy. Return their reports for the parent agent to synthesize.",
+  description: "Run up to four independent read-only research, codebase exploration, debugging, testing, or review tasks in parallel. Workers have only read/search tools and cannot edit files, commit, push, or deploy. Return reports for the parent agent to synthesize.",
   parameters: Type.Object({
-    tasks: Type.Array(Type.String({ minLength: 1 }), { minItems: 1, maxItems: 4, description: "Independent read-only worker tasks" }),
+    tasks: Type.Array(Type.String({ minLength: 1 }), { minItems: 1, maxItems: MAX_WORKERS, description: "Independent read-only worker tasks" }),
   }),
-  execute: async (_toolCallId, params, _signal, _onUpdate, ctx) => {
-    const results = await Promise.all(params.tasks.map((task, index) => runSubagent(task, ctx.cwd, index)));
+  execute: async (_toolCallId, params, signal, _onUpdate, ctx) => {
+    const results = await Promise.all(params.tasks.map((task, index) => runSubagent(task, ctx.cwd, index, signal)));
     return { content: [{ type: "text", text: results.join("\n\n") }], details: { workerCount: results.length } };
   },
 });

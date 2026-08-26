@@ -183,6 +183,7 @@ const state = {
   activity: "",
   spinnerIndex: 0,
   lastTool: "",
+  abortRequested: false,
 };
 let previousFrame = [];
 let previousSize = "";
@@ -415,7 +416,7 @@ function submit(text) {
     text = `${COMMAND_PROMPTS[commandName]}\n\nUser input:\n${argument}`;
   }
   if (text === "/status") {
-    state.messages.push({ role: "assistant", text: `Status: ${state.status}\nModel: ${DISPLAY_MODEL}\nCapability: chat only\nEngine: ${session.model?.id || "auto"}` });
+    state.messages.push({ role: "assistant", text: `Status: ${state.status}\nModel: ${DISPLAY_MODEL}\nCapability: autonomous workspace coding/research\nTools: filesystem, search, PowerShell, Git, parallel read-only subagents\nEngine: ${session.model?.id || "auto"}` });
     state.input = "";
     state.cursor = 0;
     render();
@@ -447,6 +448,7 @@ function submit(text) {
   state.error = "";
   state.streaming = true;
   state.status = "THINKING";
+  state.abortRequested = false;
   state.activity = "Opening model stream";
   state.responseStartedAt = 0;
   startActivityTicker();
@@ -454,6 +456,7 @@ function submit(text) {
   void session.prompt(text).catch((error) => {
     state.error = error instanceof Error ? error.message : String(error);
   }).finally(() => {
+    if (state.abortRequested) return;
     stopActivityTicker();
     state.streaming = false;
     state.status = "READY";
@@ -502,7 +505,6 @@ session.subscribe((event) => {
     return;
   }
   if (event.type !== "message_update") return;
-  if (event.type !== "message_update") return;
   const update = event.assistantMessageEvent;
   if (update.type !== "text_delta") return;
   state.status = "TYPING";
@@ -533,10 +535,20 @@ process.stdin.resume();
 process.stdin.on("data", (data) => {
   if (data === "\u0003") {
     if (state.streaming) {
-      void session.abort();
-      state.streaming = false;
-      state.status = "READY";
+      state.abortRequested = true;
+      state.status = "ABORTING";
+      state.activity = "Stopping the active run";
       render();
+      void session.abort().catch((error) => {
+        state.error = error instanceof Error ? error.message : String(error);
+      }).finally(() => {
+        stopActivityTicker();
+        state.streaming = false;
+        state.abortRequested = false;
+        state.status = "READY";
+        state.activity = "";
+        render();
+      });
     } else shutdown();
     return;
   }
