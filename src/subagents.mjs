@@ -12,8 +12,8 @@ const WORKER_TIMEOUT_MS = 120_000;
 const MAX_OUTPUT = 20_000;
 
 function workerEnvironment() {
-  const allowed = /^(PATH|PATHEXT|SystemRoot|WINDIR|HOME|USERPROFILE|APPDATA|LOCALAPPDATA|TEMP|TMP|PI_OFFLINE$)/;
-  return Object.fromEntries(Object.entries(process.env).filter(([key]) => allowed.test(key)));
+  const allowed = new Set(["PATH", "PATHEXT", "SystemRoot", "WINDIR", "HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "TEMP", "TMP", "PI_OFFLINE"]);
+  return Object.fromEntries(Object.entries(process.env).filter(([key]) => allowed.has(key)));
 }
 
 function terminate(child) {
@@ -26,6 +26,7 @@ function terminate(child) {
 }
 
 function runSubagent(task, cwd, index, signal) {
+  if (signal?.aborted) return Promise.resolve(`WORKER ${index + 1} · cancelled before start`);
   return new Promise((resolve) => {
     const workerExtension = join(root, "src", "worker-tools.mjs");
     const args = [piEntry, "--no-session", "--no-extensions", "--no-context-files", "--no-skills", "--no-prompt-templates", "--no-builtin-tools", "--extension", workerExtension, "--print", "--tools", "workspace_read,workspace_search,workspace_list", "--", `Work only with the bounded workspace tools. Do not request unavailable tools. ${task}`];
@@ -35,23 +36,31 @@ function runSubagent(task, cwd, index, signal) {
     let settled = false;
     let terminationReason = "";
     let killFallback;
+    let forceFallback;
     const finish = (text) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       clearTimeout(killFallback);
+      clearTimeout(forceFallback);
       signal?.removeEventListener("abort", onAbort);
       resolve(text);
     };
     const onAbort = () => {
       terminationReason = "cancelled";
       terminate(child);
-      killFallback = setTimeout(() => finish(`WORKER ${index + 1} · cancelled (process did not exit promptly)`), 5_000);
+      killFallback = setTimeout(() => {
+        terminate(child);
+        forceFallback = setTimeout(() => finish(`WORKER ${index + 1} · cancelled (process did not exit promptly)`), 1_000);
+      }, 5_000);
     };
     const timer = setTimeout(() => {
       terminationReason = `timed out after ${WORKER_TIMEOUT_MS / 1000}s`;
       terminate(child);
-      killFallback = setTimeout(() => finish(`WORKER ${index + 1} · ${terminationReason} (process did not exit promptly)`), 5_000);
+      killFallback = setTimeout(() => {
+        terminate(child);
+        forceFallback = setTimeout(() => finish(`WORKER ${index + 1} · ${terminationReason} (process did not exit promptly)`), 1_000);
+      }, 5_000);
     }, WORKER_TIMEOUT_MS);
     signal?.addEventListener("abort", onAbort, { once: true });
     child.stdout.on("data", (chunk) => { stdout = `${stdout}${chunk}`.slice(-MAX_OUTPUT); });

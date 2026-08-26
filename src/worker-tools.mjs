@@ -25,7 +25,13 @@ async function walk(root, current, output, limit = 500) {
     if ([".git", "node_modules", ".pi"].includes(entry.name)) continue;
     const next = resolve(current, entry.name);
     if (entry.isDirectory()) await walk(root, next, output, limit);
-    else output.push(relative(root, next));
+    else {
+      try {
+        const safe = await checkedPath(root, next);
+        const safeInfo = await stat(safe);
+        if (safeInfo.isFile()) output.push(relative(root, safe));
+      } catch { /* skip symlinks and paths outside the workspace */ }
+    }
     if (output.length >= limit) return;
   }
 }
@@ -42,6 +48,8 @@ export default function workerTools(pi) {
     parameters: Type.Object({ path: Type.String(), offset: Type.Optional(Type.Integer({ minimum: 1 })), limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 2000 })) }),
     async execute(_id, params, _signal, _update, ctx) {
       const file = await checkedPath(ctx.cwd, params.path);
+      const fileInfo = await stat(file);
+      if (!fileInfo.isFile() || fileInfo.size > 2_000_000) throw new Error("File is missing, not regular, or larger than 2 MB");
       const text = await readFile(file, "utf8");
       const rows = text.split(/\r?\n/);
       const start = Math.max(1, params.offset || 1);
@@ -64,6 +72,7 @@ export default function workerTools(pi) {
       const matches = [];
       for (const file of files) {
         try {
+          if ((await stat(file)).size > 2_000_000) continue;
           const rows = (await readFile(file, "utf8")).split(/\r?\n/);
           rows.forEach((line, i) => { if (regex.test(line) && matches.length < 200) matches.push(`${relative(root, file)}:${i + 1}: ${line}`); });
         } catch { /* binary/unreadable files are skipped */ }
