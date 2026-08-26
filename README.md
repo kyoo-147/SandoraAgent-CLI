@@ -1,5 +1,7 @@
 # Sandora Agent CLI
 
+![Sandora Agent CLI](assets/sandora-agent-cli.png)
+
 Terminal chat agent của chúng tôi, với identity hiển thị `Navin Sandora` và model label `Sandora 2.5 9B Computer Use`.
 
 > **Development status:** Sandora 2.5 9B Computer Use sắp được cập nhật. Tên model hiện là nhãn sản phẩm; computer-use chưa bật trong MVP, nhưng coding/research tools trong workspace đã được bật.
