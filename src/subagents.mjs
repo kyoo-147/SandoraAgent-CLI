@@ -16,12 +16,12 @@ function workerEnvironment() {
   return Object.fromEntries(Object.entries(process.env).filter(([key]) => allowed.has(key)));
 }
 
-function terminate(child) {
+function terminate(child, force = false) {
   if (!child.pid) return;
   if (process.platform === "win32") {
     execFile("taskkill", ["/pid", String(child.pid), "/t", "/f"], () => {});
   } else {
-    child.kill("SIGTERM");
+    child.kill(force ? "SIGKILL" : "SIGTERM");
   }
 }
 
@@ -50,7 +50,7 @@ function runSubagent(task, cwd, index, signal) {
       terminationReason = "cancelled";
       terminate(child);
       killFallback = setTimeout(() => {
-        terminate(child);
+        terminate(child, true);
         forceFallback = setTimeout(() => finish(`WORKER ${index + 1} · cancelled (process did not exit promptly)`), 1_000);
       }, 5_000);
     };
@@ -58,7 +58,7 @@ function runSubagent(task, cwd, index, signal) {
       terminationReason = `timed out after ${WORKER_TIMEOUT_MS / 1000}s`;
       terminate(child);
       killFallback = setTimeout(() => {
-        terminate(child);
+        terminate(child, true);
         forceFallback = setTimeout(() => finish(`WORKER ${index + 1} · ${terminationReason} (process did not exit promptly)`), 1_000);
       }, 5_000);
     }, WORKER_TIMEOUT_MS);
@@ -80,6 +80,7 @@ function runSubagent(task, cwd, index, signal) {
 export const delegateSubagentsTool = defineTool({
   name: "delegate_subagents",
   label: "Delegate subagents",
+  executionMode: "sequential",
   description: "Run up to four independent read-only research, codebase exploration, debugging, testing, or review tasks in parallel. Workers use bounded workspace-only read/search/list tools and cannot access paths outside the workspace, edit files, commit, push, or deploy. Return reports for the parent agent to synthesize.",
   parameters: Type.Object({
     tasks: Type.Array(Type.String({ minLength: 1 }), { minItems: 1, maxItems: MAX_WORKERS, description: "Independent read-only worker tasks" }),

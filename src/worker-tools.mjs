@@ -62,19 +62,20 @@ export default function workerTools(pi) {
     label: "Workspace search",
     description: "Search text across workspace files, excluding .git, node_modules, and .pi.",
     parameters: Type.Object({ pattern: Type.String(), path: Type.Optional(Type.String()) }),
-    async execute(_id, params, _signal, _update, ctx) {
+    async execute(_id, params, signal, _update, ctx) {
       const root = await realpath(ctx.cwd);
       const base = await checkedPath(root, params.path || ".");
       const files = [];
       const info = await stat(base);
       if (info.isFile()) files.push(base); else await walk(root, base, files);
-      const regex = new RegExp(params.pattern, "i");
+      const needle = params.pattern.toLocaleLowerCase();
       const matches = [];
       for (const file of files) {
+        if (signal?.aborted) throw new Error("Workspace search aborted");
         try {
           if ((await stat(file)).size > 2_000_000) continue;
           const rows = (await readFile(file, "utf8")).split(/\r?\n/);
-          rows.forEach((line, i) => { if (regex.test(line) && matches.length < 200) matches.push(`${relative(root, file)}:${i + 1}: ${line}`); });
+          rows.forEach((line, i) => { if (line.toLocaleLowerCase().includes(needle) && matches.length < 200) matches.push(`${relative(root, file)}:${i + 1}: ${line}`); });
         } catch { /* binary/unreadable files are skipped */ }
       }
       return result(matches.join("\n") || "No matches.", { matchCount: matches.length });
