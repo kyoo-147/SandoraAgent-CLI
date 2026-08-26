@@ -144,9 +144,10 @@ function compactNumber(value) {
 }
 
 const systemPrompt = [
-  "You are Sandora Agent, the research conversation agent for Navin Research.",
-  "This is a chat-only interface. Do not use tools and do not modify files.",
-  "Answer in the user's language. Be clear and concise. Distinguish verified facts, inference, assumptions, and unknowns when relevant.",
+  "You are Sandora Agent, an autonomous coding and research agent for Navin Research.",
+  "Work proactively inside the selected workspace: inspect the codebase, search files, edit files, run tests/builds, inspect errors, repair failures, and use Git when the user requests delivery.",
+  "Do not access unrelated paths, leak credentials, or run obviously destructive system commands. Preserve unrelated user changes. Before commit/push/PR/merge, review the diff and verify tests; only merge when explicitly appropriate and safe.",
+  "Explain what you are doing and report verified facts, inference, assumptions, unknowns, failures, and remaining risks. Answer in the user's language.",
 ].join(" ");
 
 const loader = new DefaultResourceLoader({
@@ -161,7 +162,9 @@ const { session } = await createAgentSession({
   cwd,
   modelRuntime,
   resourceLoader: loader,
-  tools: [],
+  tools: process.platform === "win32"
+    ? ["read", "write", "edit", "grep", "find", "ls", "powershell"]
+    : ["read", "write", "edit", "grep", "find", "ls", "bash"],
   sessionManager: SessionManager.create(cwd),
 });
 
@@ -177,6 +180,7 @@ const state = {
   commandIndex: 0,
   activity: "",
   spinnerIndex: 0,
+  lastTool: "",
 };
 let previousFrame = [];
 let previousSize = "";
@@ -390,7 +394,7 @@ function submit(text) {
   if (text === "/quit" || text === "/exit") return shutdown();
   const displayText = text;
   if (text === "/tools") {
-    state.messages.push({ role: "assistant", text: "Available capabilities\n• Chat and streaming responses\n• Research framing and evidence separation\n• Plain-text answers\n\nComputer use, files, shell, and browser tools are intentionally disabled in this MVP." });
+    state.messages.push({ role: "assistant", text: "Available capabilities\n• Read and search repository files\n• Create, edit, and delete files\n• Run PowerShell commands, builds, and tests\n• Inspect failures and repair them\n• Inspect Git status, diff, history, branches, commits, and pushes\n\nBrowser/computer-use tools are not enabled yet." });
     state.input = "";
     state.cursor = 0;
     render();
@@ -476,6 +480,26 @@ session.subscribe((event) => {
     render();
     return;
   }
+  if (event.type === "tool_execution_start") {
+    state.status = "RUNNING";
+    state.lastTool = event.toolName;
+    state.activity = `Running ${event.toolName}`;
+    render();
+    return;
+  }
+  if (event.type === "tool_execution_update") {
+    state.status = "RUNNING";
+    state.activity = `Inspecting ${event.toolName} output`;
+    render();
+    return;
+  }
+  if (event.type === "tool_execution_end") {
+    state.status = "THINKING";
+    state.activity = `Reviewing ${event.toolName} result`;
+    render();
+    return;
+  }
+  if (event.type !== "message_update") return;
   if (event.type !== "message_update") return;
   const update = event.assistantMessageEvent;
   if (update.type !== "text_delta") return;
