@@ -23,6 +23,7 @@ const colors = {
 };
 
 const DISPLAY_MODEL = "SANDORA 2.5 COMPUTER USE";
+const DISPLAY_CONTEXT_WINDOW = 261_000;
 const ASCII_LOGO = [
   "        ╭──╮        ",
   "    ╭───╯  ╰───╮    ",
@@ -300,7 +301,7 @@ function render() {
     headerLogoWidth = desiredHeaderLogoWidth;
   }
   const headerInfo = [
-    `${colors.acid}NAVIN SANDORA${RESET}  ${colors.muted}research conversation interface${RESET}`,
+    `${colors.acid}NAVIN SANDORA${RESET}  ${colors.muted}autonomous coding & research agent${RESET}`,
     `${colors.dim}workspace${RESET} ${colors.ink}${cwd}${RESET}`,
     `${colors.dim}session  ${RESET}${colors.muted}${session.sessionId.slice(0, 12)}${RESET}`,
     `${colors.dim}model    ${RESET}${colors.acid}${DISPLAY_MODEL}${RESET}  ${colors.dim}layout${RESET} ${colors.muted}${layoutMode()}${RESET}`,
@@ -314,12 +315,12 @@ function render() {
 
   if (state.messages.length === 0) {
     lines.push(`${colors.acid}✦  WELCOME TO SANDORA${RESET}`);
-    lines.push(`${colors.body}A quiet place to ask, think, and explore.${RESET}`);
+    lines.push(`${colors.body}Inspect, build, test, and ship from one terminal.${RESET}`);
     lines.push("");
     lines.push(`${colors.dim}Try asking:${RESET}`);
-    lines.push(`  ${colors.muted}› Explain a difficult idea simply${RESET}`);
-    lines.push(`  ${colors.muted}› Help me compare two research directions${RESET}`);
-    lines.push(`  ${colors.muted}› Summarize what is known and what is uncertain${RESET}`);
+    lines.push(`  ${colors.muted}› Inspect this repository and explain its architecture${RESET}`);
+    lines.push(`  ${colors.muted}› Find why the tests fail, repair them, and verify the fix${RESET}`);
+    lines.push(`  ${colors.muted}› Research options in parallel and recommend the next step${RESET}`);
   }
 
   for (const message of state.messages) {
@@ -369,12 +370,13 @@ function render() {
   lines.push(`${colors.line}╰${"─".repeat(w - 2)}╯${RESET}`);
   const u = state.usage;
   const cacheHit = u.input + u.cacheRead > 0 ? `${((u.cacheRead / (u.input + u.cacheRead)) * 100).toFixed(1)}%` : "—";
-  const contextWindow = session.model?.contextWindow || 0;
-  const contextTokens = session.agent.state.messages.reduce((sum, item) => sum + (item.role === "user" || item.role === "assistant" ? String(item.content).length : 0), 0);
-  const context = contextWindow ? `${((contextTokens / 4 / contextWindow) * 100).toFixed(1)}%/${compactNumber(contextWindow)}` : "—";
+  const contextUsage = session.getContextUsage();
+  const context = contextUsage?.tokens != null
+    ? `${((contextUsage.tokens / DISPLAY_CONTEXT_WINDOW) * 100).toFixed(1)}%/${compactNumber(DISPLAY_CONTEXT_WINDOW)}`
+    : `—/${compactNumber(DISPLAY_CONTEXT_WINDOW)}`;
   const elapsed = state.responseStartedAt ? Math.max(0.1, (Date.now() - state.responseStartedAt) / 1000) : 0;
   const tps = elapsed && u.output ? `TPS: ${(u.output / elapsed).toFixed(1)} tok/s` : "TPS: —";
-  lines.push(`${colors.dim}↑${compactNumber(u.input)} ↓${compactNumber(u.output)} R${compactNumber(u.cacheRead)} CH${cacheHit} $${u.cost.toFixed(3)} (sub) ${context} (auto)${RESET}`);
+  lines.push(`${colors.dim}↑${compactNumber(u.input)} ↓${compactNumber(u.output)} R${compactNumber(u.cacheRead)} CH${cacheHit} $${u.cost.toFixed(3)} · CTX ${context}${RESET}`);
   lines.push(`${colors.dim}${DISPLAY_MODEL} · ${session.thinkingLevel || "auto"}                                      ${tps}${RESET}`);
   lines.push(`${colors.dim}Ctrl+L clear  ·  /help commands  ·  /quit exit${RESET}`);
   const terminalRows = process.stdout.rows || 30;
