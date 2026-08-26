@@ -27,9 +27,8 @@ function terminate(child) {
 
 function runSubagent(task, cwd, index, signal) {
   return new Promise((resolve) => {
-    const args = process.platform === "win32"
-      ? [piEntry, "--no-session", "--no-extensions", "--no-context-files", "--no-skills", "--no-prompt-templates", "--print", "--tools", "read,grep,find,ls", "--", task]
-      : [piEntry, "--no-session", "--no-extensions", "--no-context-files", "--no-skills", "--no-prompt-templates", "--print", "--tools", "read,grep,find,ls", "--", task];
+    const workerExtension = join(root, "src", "worker-tools.mjs");
+    const args = [piEntry, "--no-session", "--no-extensions", "--no-context-files", "--no-skills", "--no-prompt-templates", "--no-builtin-tools", "--extension", workerExtension, "--print", "--tools", "workspace_read,workspace_search,workspace_list", "--", `Work only with the bounded workspace tools. Do not request unavailable tools. ${task}`];
     const child = spawn(process.execPath, args, { cwd, env: workerEnvironment(), stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
     let stdout = "";
     let stderr = "";
@@ -72,7 +71,7 @@ function runSubagent(task, cwd, index, signal) {
 export const delegateSubagentsTool = defineTool({
   name: "delegate_subagents",
   label: "Delegate subagents",
-  description: "Run up to four independent read-only research, codebase exploration, debugging, testing, or review tasks in parallel. Workers have only read/search tools and cannot edit files, commit, push, or deploy. Return reports for the parent agent to synthesize.",
+  description: "Run up to four independent read-only research, codebase exploration, debugging, testing, or review tasks in parallel. Workers use bounded workspace-only read/search/list tools and cannot access paths outside the workspace, edit files, commit, push, or deploy. Return reports for the parent agent to synthesize.",
   parameters: Type.Object({
     tasks: Type.Array(Type.String({ minLength: 1 }), { minItems: 1, maxItems: MAX_WORKERS, description: "Independent read-only worker tasks" }),
   }),
