@@ -83,11 +83,18 @@ function buildLogo(targetWidth) {
     return { r: Math.round(mix("r")), g: Math.round(mix("g")), b: Math.round(mix("b")), alpha: mix("alpha") };
   };
   const rows = [];
+  // Optical correction for the 16-sample header mark. The cyan upper-right
+  // loop otherwise lands on three fully occupied edge samples and looks like
+  // a rectangle. Stepping those boundary pixels inward restores the rounded
+  // silhouette of the source artwork without changing its overall geometry.
+  const upperRightEdge = new Map([[1, 12], [2, 13], [3, 14]]);
   for (let y = 0; y < outHeight; y += 2) {
     let row = "";
     for (let x = 0; x < outWidth; x++) {
       const upper = pixel(x, y);
       const lower = y + 1 < outHeight ? pixel(x, y + 1) : { ...upper, alpha: 0 };
+      if (outWidth === 16 && upperRightEdge.has(y) && x >= upperRightEdge.get(y)) upper.alpha = 0;
+      if (outWidth === 16 && upperRightEdge.has(y + 1) && x >= upperRightEdge.get(y + 1)) lower.alpha = 0;
       if (upper.alpha < 0.03 && lower.alpha < 0.03) { row += " "; continue; }
       const fg = upper.alpha >= 0.03 ? upper : lower;
       const bg = lower.alpha >= 0.03 ? lower : { r: ground[0], g: ground[1], b: ground[2] };
