@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { appendFile, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EventBus, JsonlSessionStore, OpenAICompatibleProvider, runTurn } from "../src/runtime.mjs";
@@ -75,4 +75,37 @@ test("JSONL sessions append, replay, and resume without rewriting history", asyn
     assert.ok(after.startsWith(before));
     assert.equal((await store.replay()).at(-1).value, 3);
   } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("turn loop never retries after exposing a partial stream", async () => {
+  let attempts = 0;
+  const seen = [];
+  const bus = new EventBus();
+  bus.on("text_delta", event => seen.push(event.delta));
+  const provider = { async *stream() {
+    attempts += 1;
+    yield { type: "text_delta", delta: "visible" };
+    throw new Error("stream interrupted");
+  } };
+  await assert.rejects(() => runTurn({ provider, messages: [], bus, maxRetries: 3 }), /stream interrupted/);
+  assert.equal(attempts, 1);
+  assert.deepEqual(seen, ["visible"]);
+});
+
+test("turn loop rejects incomplete provider tool calls", async () => {
+  const provider = { async *stream() { yield { type: "tool_call_delta", index: 0, id: "call", arguments: "{}" }; } };
+  await assert.rejects(() => runTurn({ provider, messages: [], executeTool: async () => "no" }), /incomplete tool call/);
+});
+
+test("JSONL replay tolerates only an unterminated crash tail", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "sandora-session-tail-"));
+  try {
+    const path = join(dir, "session.jsonl");
+    await writeFile(path, '{"type":"message","message":{"role":"user","content":"safe"}}\n{"type":"message"');
+    assert.equal((await new JsonlSessionStore(path).resume()).length, 1);
+    await appendFile(path, "\n");
+    await assert.rejects(() => new JsonlSessionStore(path).replay(), /Invalid JSONL at line 2/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });

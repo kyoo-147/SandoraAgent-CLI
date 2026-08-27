@@ -71,11 +71,13 @@ export async function runTurn({ provider, messages = [], tools = [], executeTool
     let text, calls, lastError;
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       text = []; calls = new Map();
+      let receivedDelta = false;
       try {
         for await (const event of provider.stream({ messages, tools, signal })) {
           throwIfAborted(signal);
-          if (event.type === "text_delta") { text.push(event.delta); bus.emit("text_delta", event); }
+          if (event.type === "text_delta") { receivedDelta = true; text.push(event.delta); bus.emit("text_delta", event); }
           else if (event.type === "tool_call_delta") {
+            receivedDelta = true;
             const current = calls.get(event.index) || { id: event.id, name: event.name, arguments: "" };
             if (event.id) current.id = event.id;
             if (event.name) current.name = event.name;
@@ -88,12 +90,16 @@ export async function runTurn({ provider, messages = [], tools = [], executeTool
         break;
       } catch (error) {
         lastError = error;
+        if (receivedDelta) break;
         if (attempt < maxRetries) { if (retryDelayMs) await sleep(retryDelayMs); }
       }
     }
     if (lastError) throw lastError;
     const assistant = { role: "assistant", content: text.join("") || null };
-    if (calls.size) assistant.tool_calls = [...calls.values()].map((call) => ({ id: call.id, type: "function", function: { name: call.name, arguments: call.arguments } }));
+    if (calls.size) assistant.tool_calls = [...calls.values()].map((call) => {
+      if (!call.id || !call.name) throw new Error("Provider returned an incomplete tool call");
+      return { id: call.id, type: "function", function: { name: call.name, arguments: call.arguments } };
+    });
     messages.push(assistant);
     bus.emit("assistant", { message: assistant, step });
     if (!calls.size) return { messages, message: assistant, steps: step + 1, bus };
@@ -122,7 +128,15 @@ export class JsonlSessionStore {
   async replay() {
     let text;
     try { text = await readFile(this.filePath, "utf8"); } catch (error) { if (error.code === "ENOENT") return []; throw error; }
-    return text.split(/\r?\n/).filter(Boolean).map((line, index) => { try { return JSON.parse(line); } catch { throw new Error(`Invalid JSONL at line ${index + 1}`); } });
+    const terminated = /\r?\n$/.test(text);
+    const lines = text.split(/\r?\n/).filter(Boolean);
+    return lines.flatMap((line, index) => {
+      try { return [JSON.parse(line)]; }
+      catch {
+        if (!terminated && index === lines.length - 1) return [];
+        throw new Error(`Invalid JSONL at line ${index + 1}`);
+      }
+    });
   }
   async resume() { return (await this.replay()).filter((event) => event.type === "message").map((event) => event.message); }
   async appendMessage(message) { await this.append({ type: "message", message }); }
