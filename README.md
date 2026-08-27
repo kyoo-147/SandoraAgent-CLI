@@ -49,6 +49,15 @@ Sandora is not locked to a single model vendor. Pi provides the model and provid
 
 Credentials remain on the user's machine and are not stored in this repository.
 
+### Local plugins
+
+`src/plugin-host.mjs` provides an independent, local plugin host. It discovers one
+`sandora.plugin.json` (or `plugin.json`) per immediate child directory, validates
+API version 1 manifests, and safely skips malformed entries. Enabled plugins may
+register `tools`, `providers`, `agents`, `commands`, `services`, and `hooks` via
+`PluginHost`; activation is transactional and `disable()` disposes registrations.
+Contribution names collide fail-closed with built-in and already-active names.
+
 ## How it works
 
 Pi provides the agent loop, sessions, streaming events, provider integration, and core coding tools. Sandora adds its own terminal interface, product identity, activity states, workspace policy, slash commands, and bounded parallel subagent workflow.
