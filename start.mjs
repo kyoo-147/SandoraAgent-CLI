@@ -3,10 +3,11 @@ import { homedir } from "node:os";
 import fs from "node:fs";
 import { join } from "node:path";
 import { PNG } from "pngjs";
-import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager } from "@earendil-works/pi-coding-agent";
+import { createPiAgentSession } from "./src/pi-agent-session.mjs";
 import { delegateSubagentsTool } from "./src/subagents.mjs";
 import { createCodingTools } from "./src/coding-tools.mjs";
 import { browserTools } from "./src/browser-tools.mjs";
+import { createInitialState, reduceAgentEvent, cleanupOutput } from "./src/event-reducer.mjs";
 
 const cwd = process.cwd();
 const CSI = "\x1b[";
@@ -162,41 +163,19 @@ const systemPrompt = [
   "Explain what you are doing and report verified facts, inference, assumptions, unknowns, failures, and remaining risks. Answer in the user's language.",
 ].join(" ");
 
-const loader = new DefaultResourceLoader({
+const session = await createPiAgentSession({
   cwd,
   agentDir: `${homedir()}\\.pi\\agent`,
-  systemPromptOverride: () => systemPrompt,
-});
-await loader.reload();
-
-const modelRuntime = await ModelRuntime.create();
-const { session } = await createAgentSession({
-  cwd,
-  modelRuntime,
-  resourceLoader: loader,
   tools: ["delegate_subagents"],
   customTools: [delegateSubagentsTool, ...createCodingTools(), ...browserTools],
-  sessionManager: SessionManager.create(cwd),
+  systemPrompt,
 });
 
-const state = {
-  messages: [],
-  input: "",
-  cursor: 0,
-  streaming: false,
-  status: "READY",
-  error: "",
-  usage: { input: 0, output: 0, cacheRead: 0, cost: 0 },
-  responseStartedAt: 0,
-  commandIndex: 0,
-  activity: "",
-  spinnerIndex: 0,
-  lastTool: "",
-  abortRequested: false,
-};
-let previousFrame = [];
-let previousSize = "";
-let activityTimer;
+let state = createInitialState();
+function dispatch(event) {
+  state = reduceAgentEvent(state, event);
+  render();
+}
 const spinnerFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 function width() {
@@ -466,67 +445,16 @@ function submit(text) {
   startActivityTicker();
   render();
   void session.prompt(text).catch((error) => {
-    state.error = error instanceof Error ? error.message : String(error);
+    dispatch({ type: "run.error", error: error instanceof Error ? error.message : String(error) });
   }).finally(() => {
     stopActivityTicker();
-    state.streaming = false;
-    state.abortRequested = false;
-    state.status = "READY";
-    state.activity = "";
+    dispatch({ type: state.abortRequested ? "run.abort" : "run.complete" });
+    state = cleanupOutput(state);
     render();
   });
 }
 
-session.subscribe((event) => {
-  if (event.type === "agent_start") {
-    setActivity("THINKING", "Reasoning about your question");
-    return;
-  }
-  if (event.type === "message_start" && event.message.role === "assistant") {
-    setActivity("THINKING", "Preparing an answer");
-    return;
-  }
-  if (event.type === "message_end" && event.message.role === "assistant") {
-    if (event.message.usage) {
-      state.usage.input += event.message.usage.input || 0;
-      state.usage.output += event.message.usage.output || 0;
-      state.usage.cacheRead += event.message.usage.cacheRead || 0;
-      state.usage.cost += event.message.usage.cost?.total || 0;
-    }
-    state.status = "COMPLETE";
-    render();
-    return;
-  }
-  if (event.type === "tool_execution_start") {
-    state.status = "RUNNING";
-    state.lastTool = event.toolName;
-    state.activity = `Running ${event.toolName}`;
-    render();
-    return;
-  }
-  if (event.type === "tool_execution_update") {
-    state.status = "RUNNING";
-    state.activity = `Inspecting ${event.toolName} output`;
-    render();
-    return;
-  }
-  if (event.type === "tool_execution_end") {
-    state.status = "THINKING";
-    state.activity = `Reviewing ${event.toolName} result`;
-    render();
-    return;
-  }
-  if (event.type !== "message_update") return;
-  const update = event.assistantMessageEvent;
-  if (update.type !== "text_delta") return;
-  state.status = "TYPING";
-  state.activity = "Writing response";
-  state.responseStartedAt ||= Date.now();
-  const last = state.messages[state.messages.length - 1];
-  if (!last || last.role !== "assistant") state.messages.push({ role: "assistant", text: "" });
-  state.messages[state.messages.length - 1].text += update.delta;
-  render();
-});
+session.subscribe((event) => dispatch(event));
 
 function shutdown() {
   process.stdin.setRawMode?.(false);
