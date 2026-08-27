@@ -1,118 +1,104 @@
 # Sandora Agent CLI
 
-![Giao diện Sandora Agent CLI](assets/sandora-agent-cli.png)
+![Sandora Agent CLI](assets/sandora-agent-cli.png)
 
-**Sandora Agent CLI** là trợ lý lập trình và nghiên cứu tự động chạy trong terminal, được xây dựng trên Pi agent runtime. Giao diện hiển thị thương hiệu **Navin Sandora** và model label **Sandora 2.5 9B Computer Use**.
+**Sandora Agent CLI** is a terminal-first autonomous coding and research agent built on the [Pi agent runtime](https://github.com/earendil-works/pi). It can inspect a repository, edit files, run commands and tests, recover from failures, use Git, and delegate focused work to parallel subagents.
 
-## Trạng thái phát triển
+> **Status:** Active MVP development. The public CLI is usable for local coding and research workflows; browser and direct computer-use tools are not enabled yet.
 
-Sandora hiện là MVP đang được phát triển tích cực. Các chức năng coding/research trong workspace đã hoạt động, bao gồm đọc và chỉnh sửa mã nguồn, chạy lệnh, build, test, Git và điều phối subagent.
+## What it can do
 
-Model **Sandora 2.5 9B Computer Use** đang được chúng tôi thử nghiệm riêng tư và chưa phát hành công khai. Nếu bạn muốn tham gia thử nghiệm sớm, vui lòng liên hệ đội ngũ dự án hoặc mở một GitHub Issue với tiêu đề `Private Model Access` và mô tả ngắn nhu cầu sử dụng.
+- Read, search, create, edit, and delete files in the current workspace
+- Run PowerShell commands, builds, tests, and development tools
+- Inspect errors, repair failures, and test again
+- Review Git status, diffs, history, and branches
+- Commit, push, and assist with pull-request workflows when requested
+- Delegate up to four parallel read-only exploration or review tasks
+- Preserve session context through Pi
+- Show live activity such as `THINKING`, `RUNNING`, `TYPING`, and `COMPLETE`
 
-> Tên model hiện là nhãn sản phẩm. Browser/computer-use trực tiếp chưa được bật trong bản MVP công khai này.
+## Private Sandora model preview
 
-## Khả năng hiện tại
+**Sandora 2.5 9B Computer Use** is currently being evaluated privately and is not publicly available.
 
-- Hiểu và khảo sát codebase trong workspace hiện tại
-- Đọc, tìm kiếm, tạo, chỉnh sửa và xóa file
-- Chạy PowerShell, build, test và các lệnh phát triển thông thường
-- Quan sát output, chẩn đoán lỗi và tiếp tục sửa chữa
-- Kiểm tra Git status, diff, history và branch
-- Commit, push và hỗ trợ quy trình pull request khi được yêu cầu
-- Điều phối tối đa bốn subagent read-only độc lập chạy song song
-- Duy trì session và context qua Pi runtime
-- Hiển thị rõ trạng thái `THINKING`, `RUNNING`, `TYPING`, `ABORTING` và `COMPLETE`
+Interested in early access? [Open a Private Model Access request](https://github.com/kyoo-147/SandoraAgent-CLI/issues/new?title=Private%20Model%20Access) and briefly describe your intended use case.
 
-## Kiến trúc
+The displayed model name is currently a product label. The public MVP can run with other providers through Pi.
 
-Sandora sử dụng **Pi agent runtime/core** thay vì tự xây dựng lại agent loop. Pi đảm nhiệm:
+## Quick start
 
-- session và context lifecycle
-- model/provider abstraction
-- streaming event lifecycle
-- filesystem, search, shell và tool execution
-- cơ chế mở rộng tool/provider về sau
-
-Sandora cung cấp giao diện terminal, branding, command palette, trạng thái hoạt động, policy workspace và lớp điều phối subagent riêng.
-
-## Hỗ trợ nhiều provider
-
-Sandora không bị khóa vào model riêng của chúng tôi. Nhờ lớp provider của Pi, CLI có thể hoạt động với các model/provider tương thích mà Pi hỗ trợ, tùy theo credential và cấu hình trên máy người dùng.
-
-Điều này phù hợp cho cả hai trường hợp:
-
-1. Sử dụng model Sandora riêng tư khi được cấp quyền thử nghiệm.
-2. Sử dụng provider khác đã được cấu hình trong Pi để chạy Sandora UI và agent workflow.
-
-Credential luôn được giữ trong môi trường local của người dùng; repository này không chứa API key.
-
-## Cài đặt và chạy
-
-Yêu cầu Node.js và npm.
+Requirements: Node.js and npm.
 
 ```bash
+git clone https://github.com/kyoo-147/SandoraAgent-CLI.git
+cd SandoraAgent-CLI
 npm install
 npm start
 ```
 
-Trước khi chạy, hãy cấu hình hoặc xác thực provider trong Pi, hoặc cung cấp API key bằng biến môi trường tương ứng với provider bạn sử dụng.
-
-Ví dụ với biến môi trường:
+Configure provider credentials in Pi before launch, or set the environment variable required by your provider.
 
 ```powershell
 $env:OPENAI_API_KEY="..."
 npm start
 ```
 
-## Slash commands
+## Multi-provider support
 
-Nhập `/` trong giao diện để xem và tự động hoàn thành command.
+Sandora is not locked to a single model vendor. Pi provides the model and provider abstraction, so Sandora can use compatible providers already configured in the local Pi environment.
 
-Một số command chính:
+Credentials remain on the user's machine and are not stored in this repository.
+
+## How it works
+
+Pi provides the agent loop, sessions, streaming events, provider integration, and core coding tools. Sandora adds its own terminal interface, product identity, activity states, workspace policy, slash commands, and bounded parallel subagent workflow.
+
+The parent agent remains responsible for planning, edits, integration, testing, review, and Git delivery. Delegated workers are intentionally read-only in the MVP.
+
+## Commands
+
+Type `/` in the CLI to open command completion.
 
 ```text
-/help       xem hướng dẫn
-/tools      xem capability đang bật
-/status     xem trạng thái agent và model
-/session    xem session và workspace
-/clear      xóa nội dung hiển thị
-/quit       thoát Sandora
+/help       Show help
+/tools      Show enabled capabilities
+/status     Show agent and model status
+/session    Show session and workspace information
+/clear      Clear the current view
+/quit       Exit Sandora
 ```
 
-Ngoài ra còn có các command hỗ trợ giải thích, so sánh, evidence review, research brief, challenge, tóm tắt và dịch thuật.
+Additional commands support explanation, comparison, evidence review, research briefs, critique, summarization, and translation.
 
-## An toàn workspace
+## Safety
 
-Sandora được phép thực hiện công việc phát triển thông thường trong workspace được chọn. Agent được hướng dẫn:
+Sandora is designed to work autonomously inside the selected workspace. It is instructed to preserve unrelated changes, avoid credential exposure, review diffs, and run tests before Git delivery.
 
-- không truy cập hoặc xóa dữ liệu không liên quan bên ngoài workspace
-- không làm lộ credential
-- không chạy lệnh hệ thống phá hoại
-- không ghi đè thay đổi không liên quan của người dùng
-- kiểm tra diff và test trước khi commit, push hoặc tạo pull request
+The parent process runs with the permissions of the current user. Use a container or OS sandbox when stronger isolation is required. Worker restrictions in this MVP are application-level, not a security boundary.
 
-Subagent hiện chỉ có các tool đọc/tìm kiếm được giới hạn trong workspace. Parent agent chịu trách nhiệm tích hợp, chỉnh sửa, test và Git delivery.
-
-## Kiểm tra
+## Development
 
 ```bash
 npm run check
 npm test
 ```
 
-## Giới hạn MVP
+## Current limitations
 
-- Browser/computer-use chưa được bật trong bản công khai
-- Model Sandora 2.5 9B Computer Use vẫn đang thử nghiệm riêng tư
-- Subagent được giới hạn read-only; parent agent thực hiện thay đổi
-- Sandbox của worker là application-level, chưa phải OS container
-- Chưa có GitHub Actions CI mặc định trong repository
+- Browser and direct computer use are not enabled
+- The Sandora model remains in private evaluation
+- Subagents are read-only and limited to four concurrent tasks
+- No default GitHub Actions workflow is included yet
 
-## Pi runtime và ghi nhận
+## Acknowledgements
 
-Sandora Agent CLI sử dụng Pi agent runtime/core làm nền tảng. Pi là dự án mã nguồn mở theo giấy phép MIT:
+Sandora uses [Pi](https://github.com/earendil-works/pi) as its runtime foundation. The broader terminal-agent ecosystem also provides useful design references:
 
-https://github.com/earendil-works/pi
+- [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)
+- [OpenAI Codex CLI](https://github.com/openai/codex)
+- [Google Gemini CLI](https://github.com/google-gemini/gemini-cli)
+- [Grok Build](https://github.com/xai-org/grok-build)
+- [Kimi Code CLI](https://github.com/MoonshotAI/kimi-code)
+- [Kimi CLI](https://github.com/MoonshotAI/kimi-cli)
 
-Giao diện, branding, launcher và các tích hợp Sandora trong repository này là phần riêng của dự án Sandora.
+Pi is distributed under the MIT License. Sandora-specific branding, interface, launcher, and integrations are maintained in this repository.
