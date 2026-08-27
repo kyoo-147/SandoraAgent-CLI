@@ -87,3 +87,22 @@ test("native tool registry rejects collisions and normalizes delegation", async 
   assert.match(text(result), /report:beta/);
   assert.equal(result.details.workerCount, 2);
 });
+
+test("native session emits normalized usage to the TUI contract", async () => {
+  const root = await mkdtemp(join(tmpdir(), "sandora-native-usage-"));
+  const provider = { model: "fixture", async *stream() {
+    yield { type: "text_delta", delta: "done" };
+    yield { type: "usage", usage: { prompt_tokens: 9, completion_tokens: 2, prompt_tokens_details: { cached_tokens: 1 } } };
+  } };
+  try {
+    const session = await createAgentSession({ cwd: root, provider, registry: new NativeToolRegistry() });
+    const events = [];
+    session.subscribe(event => events.push(event));
+    await session.prompt("usage");
+    const ended = events.find(event => event.type === "message.end");
+    assert.deepEqual(ended.usage, { input: 9, output: 2, cacheRead: 1, cost: 0 });
+    session.dispose();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

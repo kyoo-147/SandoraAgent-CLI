@@ -16,6 +16,7 @@ test("OpenAI-compatible provider parses streamed text and tool-call deltas", asy
     assert.equal(options.headers.authorization, "Bearer key");
     const request = JSON.parse(options.body);
     assert.equal(request.stream, true);
+    assert.deepEqual(request.stream_options, { include_usage: true });
     const text = { choices: [{ delta: { content: "hi" } }] };
     const firstCall = { choices: [{ delta: {} }] };
     firstCall.choices[0].delta.tool_calls = [{ index: 0, id: "c1", function: { name: "lookup", arguments: '{"q":' } }];
@@ -108,4 +109,16 @@ test("JSONL replay tolerates only an unterminated crash tail", async () => {
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test("provider and turn loop normalize streamed usage", async () => {
+  const usageChunk = { choices: [], usage: { prompt_tokens: 12, completion_tokens: 4, prompt_tokens_details: { cached_tokens: 3 } } };
+  const provider = new OpenAICompatibleProvider({ model: "usage", fetchImpl: async () => sse(usageChunk) });
+  const result = await runTurn({ provider, messages: [] });
+  assert.deepEqual(result.usage, { input: 12, output: 4, cacheRead: 3 });
+});
+
+test("provider errors include bounded response detail", async () => {
+  const provider = new OpenAICompatibleProvider({ model: "error", fetchImpl: async () => new Response("invalid request", { status: 400 }) });
+  await assert.rejects(() => runTurn({ provider, messages: [], maxRetries: 0 }), /Provider request failed \(400\): invalid request/);
 });

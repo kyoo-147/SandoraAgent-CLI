@@ -20,7 +20,7 @@ export function assertProvider(provider) {
 }
 
 export class OpenAICompatibleProvider {
-  constructor({ apiKey, baseUrl = "https://api.openai.com/v1", model, fetchImpl = globalThis.fetch, headers = {} } = {}) {
+  constructor({ apiKey, baseUrl = "https://api.openai.com/v1", model, fetchImpl = globalThis.fetch, headers = {}, includeUsage = true } = {}) {
     if (!model) throw new TypeError("model is required");
     if (typeof fetchImpl !== "function") throw new TypeError("fetch implementation is required");
     this.apiKey = apiKey;
@@ -28,15 +28,20 @@ export class OpenAICompatibleProvider {
     this.model = model;
     this.fetch = fetchImpl;
     this.headers = headers;
+    this.includeUsage = includeUsage;
   }
   async *stream({ messages, tools = [], temperature, signal } = {}) {
     const response = await this.fetch(`${this.baseUrl}/chat/completions`, {
       method: "POST",
       headers: { "content-type": "application/json", ...(this.apiKey ? { authorization: `Bearer ${this.apiKey}` } : {}), ...this.headers },
-      body: JSON.stringify({ model: this.model, messages, ...(tools.length ? { tools } : {}), ...(temperature == null ? {} : { temperature }), stream: true }),
+      body: JSON.stringify({ model: this.model, messages, ...(tools.length ? { tools } : {}), ...(temperature == null ? {} : { temperature }), stream: true, ...(this.includeUsage ? { stream_options: { include_usage: true } } : {}) }),
       signal,
     });
-    if (!response.ok) throw new Error(`Provider request failed (${response.status})`);
+    if (!response.ok) {
+      let detail = "";
+      try { detail = (await response.text()).replace(/\s+/g, " ").trim().slice(0, 1_000); } catch {}
+      throw new Error(`Provider request failed (${response.status})${detail ? `: ${detail}` : ""}`);
+    }
     if (!response.body) throw new Error("Provider response has no body");
     let buffer = "";
     const decoder = new TextDecoder();
@@ -50,6 +55,7 @@ export class OpenAICompatibleProvider {
         if (value === "[DONE]") return;
         let payload;
         try { payload = JSON.parse(value); } catch { continue; }
+        if (payload.usage) yield { type: "usage", usage: payload.usage };
         const choice = payload.choices?.[0];
         const delta = choice?.delta || {};
         if (delta.content) yield { type: "text_delta", delta: delta.content };
@@ -66,6 +72,7 @@ function sleep(ms) { return new Promise((resolveSleep) => setTimeout(resolveSlee
 export async function runTurn({ provider, messages = [], tools = [], executeTool, maxSteps = 8, maxRetries = 2, signal, bus = new EventBus(), retryDelayMs = 0 } = {}) {
   assertProvider(provider);
   if (!Array.isArray(messages)) throw new TypeError("messages must be an array");
+  const usage = { input: 0, output: 0, cacheRead: 0 };
   for (let step = 0; step < maxSteps; step++) {
     throwIfAborted(signal);
     let text, calls, lastError;
@@ -75,7 +82,13 @@ export async function runTurn({ provider, messages = [], tools = [], executeTool
       try {
         for await (const event of provider.stream({ messages, tools, signal })) {
           throwIfAborted(signal);
-          if (event.type === "text_delta") { receivedDelta = true; text.push(event.delta); bus.emit("text_delta", event); }
+          if (event.type === "usage") {
+            usage.input += event.usage?.prompt_tokens || 0;
+            usage.output += event.usage?.completion_tokens || 0;
+            usage.cacheRead += event.usage?.prompt_tokens_details?.cached_tokens || 0;
+            bus.emit("usage", { usage: { ...usage } });
+          }
+          else if (event.type === "text_delta") { receivedDelta = true; text.push(event.delta); bus.emit("text_delta", event); }
           else if (event.type === "tool_call_delta") {
             receivedDelta = true;
             const current = calls.get(event.index) || { id: event.id, name: event.name, arguments: "" };
@@ -102,7 +115,7 @@ export async function runTurn({ provider, messages = [], tools = [], executeTool
     });
     messages.push(assistant);
     bus.emit("assistant", { message: assistant, step });
-    if (!calls.size) return { messages, message: assistant, steps: step + 1, bus };
+    if (!calls.size) return { messages, message: assistant, steps: step + 1, usage, bus };
     if (typeof executeTool !== "function") throw new Error("Tool calls require executeTool");
     for (const call of calls.values()) {
       throwIfAborted(signal);

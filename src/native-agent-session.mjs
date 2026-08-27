@@ -72,7 +72,7 @@ export async function createAgentSession({
           },
         });
         for (const message of result.messages.slice(beforeRun)) await store.appendMessage(message);
-        bus.emit("agent", { type: "message.end", role: "assistant" });
+        bus.emit("agent", { type: "message.end", role: "assistant", usage: { ...result.usage, cost: 0 } });
         return result;
       } finally {
         active = undefined;
