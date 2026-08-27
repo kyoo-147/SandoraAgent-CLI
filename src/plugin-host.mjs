@@ -1,6 +1,6 @@
-import { readdir, readFile } from "node:fs/promises";
+import { readdir, readFile, realpath } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { join, resolve, relative } from "node:path";
+import { join, resolve, relative, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 
 export const PLUGIN_API_VERSION = 1;
@@ -9,6 +9,11 @@ const MANIFEST_NAMES = ["sandora.plugin.json", "plugin.json"];
 
 function issue(message) { return { valid: false, errors: [message] }; }
 function nonEmpty(value) { return typeof value === "string" && value.trim().length > 0; }
+
+function assertPluginEntry(directory, entry) {
+  const distance = relative(directory, entry);
+  if (!distance || distance === ".." || distance.startsWith(`..${sep}`) || distance.startsWith(sep)) throw new Error("plugin entry must remain inside its plugin directory");
+}
 
 export function validateManifest(manifest) {
   if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) return issue("manifest must be an object");
@@ -109,7 +114,11 @@ export class PluginHost {
       return () => { if (this.registries[type].get(name)?.plugin === id) this.registries[type].delete(name); };
     }]));
     try {
-      const module = await import(pathToFileURL(resolve(plugin.directory, plugin.manifest.entry)).href);
+      const requestedEntry = resolve(plugin.directory, plugin.manifest.entry);
+      assertPluginEntry(plugin.directory, requestedEntry);
+      const entry = await realpath(requestedEntry);
+      assertPluginEntry(await realpath(plugin.directory), entry);
+      const module = await import(pathToFileURL(entry).href);
       if (typeof module.activate !== "function") throw new Error("entry must export activate(api)");
       const result = await module.activate(api);
       plugin.dispose = typeof result === "function" ? result : module.dispose;

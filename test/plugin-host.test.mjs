@@ -63,3 +63,21 @@ test("rejects collisions and rolls back partial activation", async () => {
     assert.equal(host.contributions("tool").size, 1);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+test("plugin entry cannot escape its plugin directory", async () => {
+  const root = await mkdtemp(join(tmpdir(), "sandora-plugins-"));
+  try {
+    const directory = join(root, "escape");
+    await mkdir(directory);
+    await writeFile(join(root, "outside.mjs"), "globalThis.__escapedPlugin = true; export function activate() {}\n");
+    await writeFile(join(directory, "sandora.plugin.json"), JSON.stringify(manifest("escape", "../outside.mjs", {})));
+    const host = new PluginHost({ enabled: ["escape"] });
+    await host.load(await discoverPlugins(root));
+    assert.equal(host.list()[0].state, "failed");
+    assert.match(host.list()[0].error, /inside its plugin directory/);
+    assert.equal(globalThis.__escapedPlugin, undefined);
+  } finally {
+    delete globalThis.__escapedPlugin;
+    await rm(root, { recursive: true, force: true });
+  }
+});
