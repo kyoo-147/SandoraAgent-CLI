@@ -1,10 +1,9 @@
 import process from "node:process";
-import { homedir } from "node:os";
 import fs from "node:fs";
 import { join } from "node:path";
 import { PNG } from "pngjs";
-import { createPiAgentSession } from "./src/pi-agent-session.mjs";
-import { delegateSubagentsTool } from "./src/subagents.mjs";
+import { createAgentSession } from "./src/native-agent-session.mjs";
+import { NativeToolRegistry } from "./src/tool-registry.mjs";
 import { createCodingTools } from "./src/coding-tools.mjs";
 import { browserTools } from "./src/browser-tools.mjs";
 import { createInitialState, reduceAgentEvent, cleanupOutput } from "./src/event-reducer.mjs";
@@ -163,13 +162,8 @@ const systemPrompt = [
   "Explain what you are doing and report verified facts, inference, assumptions, unknowns, failures, and remaining risks. Answer in the user's language.",
 ].join(" ");
 
-const session = await createPiAgentSession({
-  cwd,
-  agentDir: `${homedir()}\\.pi\\agent`,
-  tools: ["delegate_subagents"],
-  customTools: [delegateSubagentsTool, ...createCodingTools(), ...browserTools],
-  systemPrompt,
-});
+const registry = new NativeToolRegistry().registerAll([...createCodingTools(), ...browserTools]);
+const session = await createAgentSession({ cwd, registry, systemPrompt });
 
 let state = createInitialState();
 let previousFrame = [];

@@ -1,10 +1,12 @@
 import { createCodingTools } from "./coding-tools.mjs";
 
-// Delegated workers intentionally receive observation-only tools. The same
-// registry and path policy used by the parent prevents policy drift.
-export default function workerTools(pi) {
+export const READ_ONLY_WORKER_TOOL_NAMES = ["workspace_read", "workspace_search", "workspace_list"];
+
+/** Register the bounded observation-only tool surface used by native workers. */
+export default function workerTools(registry) {
   const tools = createCodingTools();
-  for (const name of ["workspace_read", "workspace_search", "workspace_list"]) {
-    pi.registerTool(tools.find((tool) => tool.name === name));
-  }
+  const register = registry.register?.bind(registry) || registry.registerTool?.bind(registry);
+  if (!register) throw new TypeError("Worker tool registry must expose register(tool)");
+  for (const name of READ_ONLY_WORKER_TOOL_NAMES) register(tools.find(tool => tool.name === name));
+  return registry;
 }

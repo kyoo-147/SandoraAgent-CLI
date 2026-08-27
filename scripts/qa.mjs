@@ -19,6 +19,8 @@ const checks = [
   [process.execPath, ["--check", "start.mjs"]],
   [process.execPath, ["--check", "src/subagents.mjs"]],
   [process.execPath, ["--check", "src/worker-tools.mjs"]],
+  [process.execPath, ["--check", "src/native-agent-session.mjs"]],
+  [process.execPath, ["--check", "src/tool-registry.mjs"]],
   [process.execPath, ["--test"]],
   [process.execPath, ["scripts/cli-smoke.mjs"]],
 ];

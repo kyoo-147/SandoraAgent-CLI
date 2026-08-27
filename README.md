@@ -2,7 +2,7 @@
 
 ![Sandora Agent CLI](assets/sandora-agent-cli.png)
 
-**Sandora Agent CLI** is a terminal-first autonomous coding and research agent built on the [Pi agent runtime](https://github.com/earendil-works/pi). It can inspect a repository, edit files, run commands and tests, recover from failures, use Git, and delegate focused work to parallel subagents.
+**Sandora Agent CLI** is a terminal-first autonomous coding and research agent built on Sandora's native runtime. It can inspect a repository, edit files, run commands and tests, recover from failures, use Git, and delegate focused work to parallel subagents.
 
 > **Status:** Active MVP development. The public CLI is usable for local coding and research workflows; browser tools use optional Chromium/CDP, while direct computer-use tools fail closed when no Windows adapter is available.
 
@@ -14,7 +14,7 @@
 - Review Git status, diffs, history, and branches
 - Commit, push, and assist with pull-request workflows when requested
 - Delegate up to four parallel read-only exploration or review tasks
-- Preserve session context through Pi
+- Preserve session context through Sandora's JSONL session store
 - Show live activity such as `THINKING`, `RUNNING`, `TYPING`, and `COMPLETE`
 
 ## Private Sandora model preview
@@ -23,7 +23,7 @@
 
 Interested in early access? [Open a Private Model Access request](https://github.com/kyoo-147/SandoraAgent-CLI/issues/new?title=Private%20Model%20Access) and briefly describe your intended use case.
 
-The displayed model name is currently a product label. The public MVP can run with other providers through Pi.
+The displayed model name is currently a product label. The public MVP uses an OpenAI-compatible provider.
 
 ## Quick start
 
@@ -36,16 +36,18 @@ npm install
 npm start
 ```
 
-Configure provider credentials in Pi before launch, or set the environment variable required by your provider.
+Configure an OpenAI-compatible provider with environment variables (credentials are optional for offline startup).
 
 ```powershell
 $env:OPENAI_API_KEY="..."
+$env:OPENAI_BASE_URL="https://api.openai.com/v1"
+$env:OPENAI_MODEL="gpt-4o-mini"
 npm start
 ```
 
 ## Multi-provider support
 
-Sandora is not locked to a single model vendor. Pi provides the model and provider abstraction, so Sandora can use compatible providers already configured in the local Pi environment.
+Sandora is not locked to a single model vendor. Any OpenAI-compatible chat-completions endpoint can be configured with `OPENAI_BASE_URL`, `OPENAI_MODEL`, and `OPENAI_API_KEY`.
 
 Credentials remain on the user's machine and are not stored in this repository.
 
@@ -60,7 +62,7 @@ Contribution names collide fail-closed with built-in and already-active names.
 
 ## How it works
 
-Pi provides the agent loop, sessions, streaming events, provider integration, and core coding tools. Sandora adds its own terminal interface, product identity, activity states, workspace policy, slash commands, and bounded parallel subagent workflow.
+Sandora's native runtime provides the agent loop, JSONL sessions, streaming events, provider integration, and core coding tools.
 
 The parent agent remains responsible for planning, edits, integration, testing, review, and Git delivery. Delegated workers are intentionally read-only in the MVP.
 
@@ -97,8 +99,7 @@ npm run qa:deps
 `npm run qa` is the deterministic local QA harness. It runs syntax checks, fixture
 streaming/tool/error and session-recovery E2E tests, bounded plugin/swarm checks,
 and a child-process cleanup smoke test. CI performs a clean `npm ci` first and
-runs the high-severity production dependency scan. The Pi-removal gate remains
-an explicit integration task; this harness does not claim Pi-free runtime proof.
+runs the high-severity production dependency scan.
 
 ## Current limitations
 
@@ -109,7 +110,7 @@ an explicit integration task; this harness does not claim Pi-free runtime proof.
 
 ## Acknowledgements
 
-Sandora uses [Pi](https://github.com/earendil-works/pi) as its runtime foundation. The broader terminal-agent ecosystem also provides useful design references:
+The broader terminal-agent ecosystem provides useful design references:
 
 - [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)
 - [OpenAI Codex CLI](https://github.com/openai/codex)
@@ -118,4 +119,4 @@ Sandora uses [Pi](https://github.com/earendil-works/pi) as its runtime foundatio
 - [Kimi Code CLI](https://github.com/MoonshotAI/kimi-code)
 - [Kimi CLI](https://github.com/MoonshotAI/kimi-cli)
 
-Pi is distributed under the MIT License. Sandora-specific branding, interface, launcher, and integrations are maintained in this repository.
+Sandora-specific branding, interface, launcher, and integrations are maintained in this repository.

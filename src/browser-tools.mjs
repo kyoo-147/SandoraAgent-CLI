@@ -3,7 +3,7 @@ import { request } from "node:http";
 import { mkdir, realpath, writeFile } from "node:fs/promises";
 import { dirname, relative, resolve, sep } from "node:path";
 import { Type } from "typebox";
-import { defineTool } from "@earendil-works/pi-coding-agent";
+import { defineTool } from "./tool-registry.mjs";
 
 const sessions = new Map();
 let nextId = 1;
@@ -112,4 +112,4 @@ const browserCleanup = defineTool({ name: "browser_cleanup", label: "Browser cle
 const computerNames = ["computer_observe", "computer_focus", "computer_click", "computer_type", "computer_key", "computer_scroll", "computer_screenshot"];
 const computerTools = computerNames.map(name => defineTool({ name, label: name, description: "Computer control with a capability-detected Windows adapter; explicit unsupported response when unavailable.", parameters: Type.Object({}), execute: async () => unsupported(name) }));
 export const browserTools = [browserLaunch, browserConnect, browserObserve, browserNavigate, browserClick, browserType, browserScroll, browserTabs, browserScreenshot, browserCleanup, ...computerTools];
-export default function registerBrowserTools(pi) { for (const tool of browserTools) pi.registerTool(tool); }
+export default function registerBrowserTools(registry) { for (const tool of browserTools) registry.register(tool); return registry; }

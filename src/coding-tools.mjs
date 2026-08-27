@@ -2,6 +2,7 @@ import process from "node:process";
 import { spawn } from "node:child_process";
 import { mkdir, readdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
 import { dirname, relative, resolve, sep } from "node:path";
+import { defineTool } from "./tool-registry.mjs";
 import { Type } from "typebox";
 
 export const LIMITS = Object.freeze({ maxFileBytes: 2_000_000, maxOutputBytes: 20_000, maxMatches: 200, maxFiles: 500, timeoutMs: 30_000 });
@@ -97,5 +98,5 @@ export function createCodingTools() {
     { name: "git_observe", label: "Git observe", description: "Observe Git state without mutation.", parameters: Type.Object({ view: Type.Optional(Type.Union([Type.Literal("status"), Type.Literal("diff"), Type.Literal("log"), Type.Literal("branches")])) }), execute: async (_id, p, signal, _u, ctx) => { const args = { status: ["status", "--short", "--branch"], diff: ["diff", "--stat"], log: ["log", "-5", "--oneline"], branches: ["branch", "--list"] }[p.view || "status"]; return runBounded("git", args, { cwd: ctx.cwd, signal }); } },
   ];
 }
-export function registerCodingTools(pi) { for (const tool of createCodingTools()) pi.registerTool(tool); }
+export function registerCodingTools(registry) { for (const tool of createCodingTools()) registry.register(tool); return registry; }
 export default registerCodingTools;
