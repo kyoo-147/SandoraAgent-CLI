@@ -1,0 +1,78 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { EventBus, JsonlSessionStore, OpenAICompatibleProvider, runTurn } from "../src/runtime.mjs";
+
+function sse(...events) {
+  const body = events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join("") + "data: [DONE]\n\n";
+  return new Response(new TextEncoder().encode(body));
+}
+
+test("OpenAI-compatible provider parses streamed text and tool-call deltas", async () => {
+  const provider = new OpenAICompatibleProvider({ model: "test", apiKey: "key", baseUrl: "http://local/v1", fetchImpl: async (url, options) => {
+    assert.equal(url, "http://local/v1/chat/completions");
+    assert.equal(options.headers.authorization, "Bearer key");
+    const request = JSON.parse(options.body);
+    assert.equal(request.stream, true);
+    const text = { choices: [{ delta: { content: "hi" } }] };
+    const firstCall = { choices: [{ delta: {} }] };
+    firstCall.choices[0].delta.tool_calls = [{ index: 0, id: "c1", function: { name: "lookup", arguments: '{"q":' } }];
+    const secondCall = { choices: [{ delta: {} }] };
+    secondCall.choices[0].delta.tool_calls = [{ index: 0, function: { arguments: '"x"}' } }];
+    const done = { choices: [{ delta: {}, finish_reason: "tool_calls" }] };
+    return sse(text, firstCall, secondCall, done);
+  }});
+  const events = [];
+  for await (const event of provider.stream({ messages: [] })) events.push(event);
+  assert.deepEqual(events.map((event) => event.type), ["text_delta", "tool_call_delta", "tool_call_delta", "finish"]);
+  assert.equal(events[1].name, "lookup");
+  assert.equal(events[2].arguments, '"x"}');
+});
+
+test("turn loop executes tools, emits events, and retries stream failures", async () => {
+  let attempts = 0;
+  const bus = new EventBus();
+  const seen = [];
+  bus.on("text_delta", (event) => seen.push(event.delta));
+  const provider = { async *stream({ messages }) {
+    attempts++;
+    if (attempts === 1) throw new Error("temporary");
+    if (messages.at(-1)?.role === "tool") yield { type: "text_delta", delta: "done" };
+    else {
+      yield { type: "tool_call_delta", index: 0, id: "1", name: "echo", arguments: "{\"value\":1}" };
+      yield { type: "finish", reason: "tool_calls" };
+    }
+  }};
+  const result = await runTurn({ provider, messages: [{ role: "user", content: "go" }], executeTool: async (name, args) => `${name}:${args.value}`, bus, maxRetries: 1 });
+  assert.equal(attempts, 3);
+  assert.equal(result.message.content, "done");
+  assert.deepEqual(seen, ["done"]);
+  assert.equal(result.messages.at(-1).role, "assistant");
+});
+
+test("turn loop honors abort and max steps", async () => {
+  const controller = new AbortController();
+  controller.abort(new Error("stop"));
+  await assert.rejects(() => runTurn({ provider: { stream: async function* () {} }, signal: controller.signal }), /stop/);
+  const provider = { async *stream() { yield { type: "tool_call_delta", index: 0, id: "1", name: "again", arguments: "{}" }; } };
+  await assert.rejects(() => runTurn({ provider, executeTool: async () => "ok", maxSteps: 1 }), /Maximum turn steps/);
+});
+
+test("JSONL sessions append, replay, and resume without rewriting history", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "sandora-session-"));
+  try {
+    const path = join(dir, "session.jsonl");
+    const store = new JsonlSessionStore(path);
+    await store.appendMessage({ role: "user", content: "hello" });
+    await store.appendMessage({ role: "assistant", content: "world" });
+    assert.deepEqual(await store.resume(), [{ role: "user", content: "hello" }, { role: "assistant", content: "world" }]);
+    const before = await readFile(path, "utf8");
+    await store.append({ type: "event", value: 3, timestamp: "fixed" });
+    const after = await readFile(path, "utf8");
+    assert.equal(after.split("\n").filter(Boolean).length, 3);
+    assert.ok(after.startsWith(before));
+    assert.equal((await store.replay()).at(-1).value, 3);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
