@@ -65,12 +65,16 @@ export class SandoraAgentManager extends EventEmitter {
     normalized.sort((a, b) => a.key.localeCompare(b.key));
     const identity = idempotencyKey === undefined ? canonical(normalized.map(({ prompt, task, config, context, tools, model, budget, key, agentId }) => ({ prompt, task, config, context, tools, model, budget, key, agentId }))) : `idempotency:${idempotencyKey}`;
     const id = runId ?? stableId("run", `${this.id}:${identity}`);
-    if (this.runs.has(id)) return this.runs.get(id).promise;
-    const run = this.#newRun(id, normalized);
+    if (this.runs.has(id)) {
+      const existing = this.runs.get(id);
+      if (existing.identity !== identity) throw new Error(`run ID collision: ${id}`);
+      return existing.promise;
+    }
+    const run = this.#newRun(id, normalized, identity);
     this.runs.set(id, run); run.promise = this.#schedule(run); return run.promise;
   }
 
-  #newRun(id, tasks) { return { id, tasks: new Map(tasks.map((task) => [task.agentId, task])), queue: tasks, active: 0, unsettled: 0, limit: Math.min(this.rampStep, this.maxConcurrency), cancelled: false, controller: new AbortController(), promise: null }; }
+  #newRun(id, tasks, identity) { return { id, identity, runner: this.runner, tasks: new Map(tasks.map((task) => [task.agentId, task])), queue: tasks, active: 0, unsettled: 0, limit: Math.min(this.rampStep, this.maxConcurrency), cancelled: false, controller: new AbortController(), promise: null }; }
 
   cancel(runId, agentId) {
     const run = this.runs.get(runId); if (!run) return false;
@@ -99,9 +103,10 @@ export class SandoraAgentManager extends EventEmitter {
     if (run.active || run.unsettled || [...run.tasks.values()].some((task) => ["queued", "running"].includes(task.status))) throw new Error("cannot resume while a task is queued or running");
     const unfinished = [...run.tasks.values()].filter((task) => task.status === "failed" || task.status === "cancelled");
     if (!unfinished.length) return run.promise;
-    if (runner) { if (typeof runner !== "function") throw new TypeError("runner must be a function"); this.runner = runner; }
+    if (runner) { if (typeof runner !== "function") throw new TypeError("runner must be a function"); run.runner = runner; }
     run.cancelled = false; run.controller = new AbortController(); run.limit = Math.min(this.rampStep, this.maxConcurrency);
-    for (const task of unfinished) { task.status = "queued"; task.error = undefined; task.result = undefined; task.artifacts = []; run.queue.push(task); }
+    for (const task of unfinished) { task.status = "queued"; task.error = undefined; task.result = undefined; task.artifacts = []; }
+    run.queue = unfinished;
     run.promise = this.#schedule(run); return run.promise;
   }
 
@@ -120,7 +125,7 @@ export class SandoraAgentManager extends EventEmitter {
     const controller = new AbortController(); task.controller = controller;
     const abort = () => controller.abort(); run.controller.signal.addEventListener("abort", abort, { once: true });
     const budget = budgetFor(task); const execution = Object.freeze({ agentId: task.agentId, runId: run.id, config: cloneAndFreeze(task.config ?? {}), context: cloneAndFreeze(task.context ?? {}), tools: cloneAndFreeze(task.tools ?? []), model: task.model, budget: cloneAndFreeze(budget), signal: controller.signal });
-    const runnerPromise = Promise.resolve().then(() => this.runner(task.prompt ?? task.task ?? task.key, execution));
+    const runnerPromise = Promise.resolve().then(() => run.runner(task.prompt ?? task.task ?? task.key, execution));
     runnerPromise.then(() => {}, () => {});
     let timer; let outcome;
     const timeout = budget.wallTimeMs === undefined ? null : new Promise((resolve) => { timer = setTimeout(() => resolve({ kind: "timeout" }), budget.wallTimeMs); });

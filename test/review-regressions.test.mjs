@@ -58,3 +58,22 @@ test("enforces wall-time budget and reports unsupported fields", async () => {
   assert.match(status.tasks[0].error, /wall-time/);
   assert.deepEqual(seen.budget.unsupported, ["tokens"]);
 });
+
+test("explicit run IDs reject different task identities", async () => {
+  const manager = new SandoraAgentManager({ runner: async prompt => prompt });
+  const first = manager.start([{ id: "a", prompt: "one" }], { runId: "claimed" });
+  assert.throws(() => manager.start([{ id: "a", prompt: "two" }], { runId: "claimed" }), /run ID collision/);
+  assert.equal((await first).tasks[0].result, "one");
+});
+
+test("resume runner override remains scoped to its run", async () => {
+  const manager = new SandoraAgentManager({ runner: async prompt => {
+    if (prompt === "retry") throw new Error("first attempt");
+    return `default:${prompt}`;
+  } });
+  await manager.start([{ id: "retry", prompt: "retry" }], { runId: "retry-run" });
+  const resumed = await manager.resume("retry-run", { runner: async prompt => `override:${prompt}` });
+  assert.equal(resumed.tasks[0].result, "override:retry");
+  const next = await manager.start([{ id: "next", prompt: "next" }]);
+  assert.equal(next.tasks[0].result, "default:next");
+});
