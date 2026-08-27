@@ -1,3 +1,4 @@
+export { SandoraAgentManager, createAgentManager, stableId } from "./agent-manager.mjs";
 import process from "node:process";
 import { spawn, execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
