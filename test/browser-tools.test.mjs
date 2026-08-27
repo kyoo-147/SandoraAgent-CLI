@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { browserTools } from "../src/browser-tools.mjs";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { resolve } from "node:path";
+import { browserTools, resolveBrowserArtifactPath } from "../src/browser-tools.mjs";
 
 test("browser and computer contracts are registered", () => {
   const names = browserTools.map(tool => tool.name);
@@ -17,4 +20,15 @@ test("computer tools fail closed with an explicit capability response", async ()
   const result = await tool.execute("test", {});
   assert.equal(result.details.supported, false);
   assert.match(result.content[0].text, /supported/);
+});
+
+test("browser artifact paths stay inside the runtime workspace", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "sandora-browser-artifact-"));
+  try {
+    assert.equal(await resolveBrowserArtifactPath(root, "artifacts/page.png"), resolve(root, "artifacts/page.png"));
+    await assert.rejects(() => resolveBrowserArtifactPath(root, "../outside.png"), /inside the workspace/);
+    await assert.rejects(() => resolveBrowserArtifactPath(undefined, "page.png"), /requires a workspace/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
