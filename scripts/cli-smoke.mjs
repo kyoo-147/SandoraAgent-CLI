@@ -9,6 +9,10 @@ const child = spawn(process.execPath, ["start.mjs"], {
   stdio: ["pipe", "pipe", "pipe"],
   windowsHide: true,
 });
+const exitPromise = new Promise((resolvePromise, reject) => {
+  child.once("error", reject);
+  child.once("close", (code, signal) => resolvePromise({ code, signal }));
+});
 let output = "";
 const visibleOutput = () => output.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "");
 child.stdout.on("data", (chunk) => { output += chunk; });
@@ -22,10 +26,7 @@ const deadline = Date.now() + 5_000;
 while (!visibleOutput().includes("Commands:") && Date.now() < deadline) await new Promise((resolvePromise) => setTimeout(resolvePromise, 50));
 const seenHelp = visibleOutput().includes("Commands:");
 child.kill();
-const result = await new Promise((resolvePromise, reject) => {
-  child.once("error", reject);
-  child.once("close", (code, signal) => resolvePromise({ code, signal }));
-});
+const result = await exitPromise;
 clearTimeout(timer);
 if (!seenHelp) throw new Error("CLI smoke output missing /help response");
 if (result.code !== null) throw new Error(`CLI did not terminate from cleanup: ${JSON.stringify(result)}`);

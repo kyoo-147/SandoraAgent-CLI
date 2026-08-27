@@ -172,6 +172,9 @@ const session = await createPiAgentSession({
 });
 
 let state = createInitialState();
+let previousFrame = [];
+let previousSize = "";
+let activityTimer;
 function dispatch(event) {
   state = reduceAgentEvent(state, event);
   render();
@@ -352,11 +355,11 @@ function render() {
   const contextUsage = session.getContextUsage();
   const context = contextUsage?.tokens != null
     ? `${((contextUsage.tokens / DISPLAY_CONTEXT_WINDOW) * 100).toFixed(1)}%/${compactNumber(DISPLAY_CONTEXT_WINDOW)}`
-    : `—/${compactNumber(DISPLAY_CONTEXT_WINDOW)}`;
+    : `0.0%/${compactNumber(DISPLAY_CONTEXT_WINDOW)}`;
   const elapsed = state.responseStartedAt ? Math.max(0.1, (Date.now() - state.responseStartedAt) / 1000) : 0;
   const tps = elapsed && u.output ? `TPS: ${(u.output / elapsed).toFixed(1)} tok/s` : "TPS: —";
   lines.push(`${colors.dim}↑${compactNumber(u.input)} ↓${compactNumber(u.output)} R${compactNumber(u.cacheRead)} CH${cacheHit} $${u.cost.toFixed(3)} · CTX ${context}${RESET}`);
-  lines.push(`${colors.dim}${DISPLAY_MODEL} · ${session.thinkingLevel || "auto"}                                      ${tps}${RESET}`);
+  lines.push(`${colors.dim}${DISPLAY_MODEL}                                      ${tps}${RESET}`);
   lines.push(`${colors.dim}Ctrl+L clear  ·  /help commands  ·  /quit exit${RESET}`);
   const terminalRows = process.stdout.rows || 30;
   const paddingRows = Math.max(0, terminalRows - 1 - lines.length);
@@ -388,7 +391,7 @@ function submit(text) {
   if (text === "/quit" || text === "/exit") return shutdown();
   const displayText = text;
   if (text === "/tools") {
-    state.messages.push({ role: "assistant", text: "Available capabilities\n• Read and search repository files\n• Create, edit, and delete files\n• Run PowerShell commands, builds, and tests\n• Inspect failures and repair them\n• Inspect Git status, diff, history, branches, commits, and pushes\n• Delegate up to four independent read-only subagents in parallel\n\nBrowser/computer-use tools are not enabled yet." });
+    state.messages.push({ role: "assistant", text: "Available capabilities\n• Read and search repository files\n• Create, edit, and delete files\n• Run bounded shell commands, builds, and tests\n• Inspect failures and repair them\n• Inspect Git status, diff, history, branches, commits, and pushes\n• Delegate up to four independent read-only subagents in parallel\n• Use structured browser automation when a Chromium/CDP backend is available\n\nDirect desktop computer use fails closed until a supported adapter is configured." });
     state.input = "";
     state.cursor = 0;
     render();
@@ -472,7 +475,12 @@ process.stdout.on("resize", () => {
 process.stdin.setEncoding("utf8");
 process.stdin.setRawMode?.(true);
 process.stdin.resume();
-process.stdin.on("data", (data) => {
+function handleInput(data) {
+  const characters = [...data];
+  if (characters.length > 1 && !data.startsWith("\x1b")) {
+    for (const character of characters) handleInput(character);
+    return;
+  }
   if (data === "\u0003") {
     if (state.streaming) {
       state.abortRequested = true;
@@ -540,7 +548,8 @@ process.stdin.on("data", (data) => {
     state.cursor += clean.length;
     render();
   }
-});
+}
+process.stdin.on("data", handleInput);
 process.on("SIGINT", shutdown);
 process.on("exit", () => process.stdout.write(`${CSI}?25h${CSI}?1049l${RESET}`));
 
