@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, writeFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
@@ -53,8 +53,27 @@ test("dirty worker cleanup preserves an explicit recovery receipt", async () => 
     await writeFile(resolve(worker.path, "draft.txt"), "uncommitted\n");
     await assert.rejects(() => manager.cleanup("dirty", { preserveDirty: false }), /Refusing to discard/);
     const cleanup = await manager.cleanup("dirty");
-    assert.equal(cleanup.cleaned, true);
+    assert.equal(cleanup.cleaned, false);
+    assert.equal(cleanup.preserved, true);
+    assert.equal((await stat(worker.path)).isDirectory(), true);
     assert.match(await readFile(cleanup.preservationPath, "utf8"), /dW5jb21taXR0ZWQ/);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("clean but unintegrated worker remains recoverable", async () => {
+  const root = await fixture();
+  const manager = new GitWorktreeManager({ repoRoot: root, worktreeRoot: resolve(root, ".workers") });
+  try {
+    const worker = await manager.create("unmerged");
+    await writeFile(resolve(worker.path, "candidate.txt"), "candidate\n");
+    await git(worker.path, "add", "candidate.txt");
+    await git(worker.path, "commit", "-qm", "candidate change");
+    const cleanup = await manager.cleanup("unmerged");
+    assert.equal(cleanup.cleaned, false);
+    assert.equal(cleanup.preserved, true);
+    assert.match(cleanup.reason, /not integrated/);
+    assert.equal((await stat(worker.path)).isDirectory(), true);
+    assert.match((await git(root, "branch", "--list", worker.branch)).stdout, /sandora\/swarm\/unmerged/);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

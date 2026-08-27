@@ -5,7 +5,6 @@ import { Buffer } from "node:buffer";
 import { resolve, relative, basename } from "node:path";
 
 const execFile = promisify(execFileCallback);
-const METADATA_FILE = ".sandora-worktree.json";
 const ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
 function safeId(id) {
@@ -51,10 +50,9 @@ export class GitWorktreeManager {
     } catch (error) { if (error instanceof GitWorktreeError) throw error; }
     const dirty = await this.dirtyState(this.repoRoot);
     const baseCommit = (await this.git(["rev-parse", baseRef])).stdout.trim();
-    const result = await this.git(["worktree", "add", "-b", branchName, path, baseRef]);
+    const result = await this.git(["worktree", "add", "-b", branchName, path, baseCommit]);
     const metadata = { version: 1, workerId, owner, branch: branchName, baseRef: baseCommit, path, repoRoot: this.repoRoot, createdAt: new Date().toISOString(), ownershipToken: `${workerId}:${Date.now()}`, sourceDirty: dirty };
     await writeFile(this.metadataPath(workerId), JSON.stringify(metadata, null, 2) + "\n", "utf8");
-    await writeFile(resolve(path, METADATA_FILE), JSON.stringify(metadata, null, 2) + "\n", "utf8");
     return { ...metadata, output: result.stdout.trim() };
   }
 
@@ -111,19 +109,21 @@ export class GitWorktreeManager {
     return { workerId, integrated: true, output: result.stdout.trim() };
   }
 
-  async cleanup(workerId, { preserveDirty = true, deleteBranch = true } = {}) {
+  async cleanup(workerId, { preserveDirty = true, deleteBranch = true, targetRef = "HEAD" } = {}) {
     const meta = await this.metadata(workerId);
     const state = await this.dirtyState(meta.path);
-    let preservationPath;
     if (state.dirty) {
       if (!preserveDirty) throw new GitWorktreeError(`Refusing to discard dirty worker ${workerId}`, { state });
-      preservationPath = resolve(this.metadataRoot, `${workerId}.dirty.json`);
+      const preservationPath = resolve(this.metadataRoot, `${workerId}.dirty.json`);
       await writeFile(preservationPath, JSON.stringify({ workerId, preservedAt: new Date().toISOString(), ...state }, null, 2) + "\n");
+      return { workerId, cleaned: false, preserved: true, reason: "dirty worker requires recovery", preservationPath, path: meta.path, branch: meta.branch };
     }
-    await this.git(["worktree", "remove", "--force", meta.path]);
-    if (deleteBranch) await this.git(["branch", "-D", meta.branch], { allowFailure: true });
+    const merged = await this.git(["merge-base", "--is-ancestor", meta.branch, targetRef], { allowFailure: true });
+    if (merged.code !== 0) return { workerId, cleaned: false, preserved: true, reason: `branch is not integrated into ${targetRef}`, preservationPath: null, path: meta.path, branch: meta.branch };
+    await this.git(["worktree", "remove", meta.path]);
+    if (deleteBranch) await this.git(["branch", "-d", meta.branch]);
     await rm(this.metadataPath(workerId), { force: true });
-    return { workerId, cleaned: true, preservationPath: preservationPath || null };
+    return { workerId, cleaned: true, preserved: false, preservationPath: null };
   }
 
   async recover(workerId) {
