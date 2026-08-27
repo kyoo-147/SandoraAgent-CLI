@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { PNG } from "pngjs";
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager } from "@earendil-works/pi-coding-agent";
 import { delegateSubagentsTool } from "./src/subagents.mjs";
+import { createCodingTools } from "./src/coding-tools.mjs";
 
 const cwd = process.cwd();
 const CSI = "\x1b[";
@@ -172,10 +173,8 @@ const { session } = await createAgentSession({
   cwd,
   modelRuntime,
   resourceLoader: loader,
-  tools: process.platform === "win32"
-    ? ["read", "write", "edit", "grep", "find", "ls", "powershell", "delegate_subagents"]
-    : ["read", "write", "edit", "grep", "find", "ls", "bash", "delegate_subagents"],
-  customTools: [delegateSubagentsTool],
+  tools: ["delegate_subagents"],
+  customTools: [delegateSubagentsTool, ...createCodingTools()],
   sessionManager: SessionManager.create(cwd),
 });
 
