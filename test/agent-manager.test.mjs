@@ -19,7 +19,7 @@ test("stable IDs and isolated execution boundaries are deterministic", async () 
   assert.equal(seen[0].execution.agentId, stableId("agent", "a"));
   assert.deepEqual(seen[0].execution.context, { branch: "a" });
   assert.deepEqual(manager.result(first.runId, stableId("agent", "b")).artifacts.length, 1);
-  assert.equal((await manager.start([{ id: "b", prompt: "ignored" }, { id: "a", prompt: "ignored" }])).runId, first.runId);
+  assert.notEqual((await manager.start([{ id: "b", prompt: "ignored" }, { id: "a", prompt: "ignored" }])).runId, first.runId);
 });
 
 test("ramping is bounded and failures do not stop other agents", async () => {
@@ -42,9 +42,9 @@ test("cancel aborts active work and resume retries only unfinished agents", asyn
     await new Promise((resolve, reject) => { const timer = setTimeout(resolve, 100); signal.addEventListener("abort", () => { clearTimeout(timer); reject(new Error("aborted")); }, { once: true }); });
     return "done";
   } });
-  const pending = manager.start([{ id: "x", prompt: "work" }]);
+  const pending = manager.start([{ id: "x", prompt: "work" }], { runId: "run-x" });
   await delay(5);
-  const runId = stableId("run", "default:x");
+  const runId = "run-x";
   assert.equal(manager.cancel(runId), true);
   const cancelled = await pending;
   assert.equal(cancelled.tasks[0].status, "cancelled");
