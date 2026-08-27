@@ -122,3 +122,16 @@ test("provider errors include bounded response detail", async () => {
   const provider = new OpenAICompatibleProvider({ model: "error", fetchImpl: async () => new Response("invalid request", { status: 400 }) });
   await assert.rejects(() => runTurn({ provider, messages: [], maxRetries: 0 }), /Provider request failed \(400\): invalid request/);
 });
+
+test("JSONL store serializes concurrent append sequence numbers", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "sandora-session-sequence-"));
+  try {
+    const store = new JsonlSessionStore(join(dir, "session.jsonl"));
+    await Promise.all(Array.from({ length: 20 }, (_value, index) => store.append({ type: "event", index })));
+    const events = await store.replay();
+    assert.deepEqual(events.map(event => event.sequence), Array.from({ length: 20 }, (_value, index) => index + 1));
+    assert.equal(new Set(events.map(event => event.index)).size, 20);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

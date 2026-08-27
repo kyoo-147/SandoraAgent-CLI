@@ -24,6 +24,7 @@ test("native session streams, executes tools, persists, and resumes", async () =
   const events = [];
   try {
     const session = await createAgentSession({ cwd: root, sessionPath, provider, registry, systemPrompt: "fixture system" });
+    const firstSessionId = session.sessionId;
     session.subscribe(event => events.push(event.type));
     const result = await session.prompt("go");
     assert.equal(result.message.content, "tool said ok");
@@ -35,6 +36,11 @@ test("native session streams, executes tools, persists, and resumes", async () =
 
     const persisted = await new JsonlSessionStore(sessionPath).resume();
     assert.deepEqual(persisted.map(message => message.role), ["user", "assistant", "tool", "assistant"]);
+    const durable = await new JsonlSessionStore(sessionPath).replay();
+    assert.deepEqual(durable.map(event => event.sequence), durable.map((_event, index) => index + 1));
+    for (const type of ["session.started", "turn.started", "model.started", "tool.started", "tool.completed", "turn.completed"]) {
+      assert.ok(durable.some(event => event.type === type), `missing durable ${type}`);
+    }
     const resumedProvider = { model: "fixture", async *stream({ messages }) {
       assert.equal(messages[0].content, "fixture system");
       assert.equal(messages.filter(message => message.role === "system").length, 1);
@@ -42,6 +48,7 @@ test("native session streams, executes tools, persists, and resumes", async () =
       yield { type: "text_delta", delta: "resumed" };
     } };
     const resumed = await createAgentSession({ cwd: root, sessionPath, provider: resumedProvider, registry: new NativeToolRegistry(), systemPrompt: "fixture system" });
+    assert.equal(resumed.sessionId, firstSessionId);
     assert.equal((await resumed.prompt("again")).message.content, "resumed");
     resumed.dispose();
   } finally {
@@ -63,6 +70,9 @@ test("native session aborts an active provider stream", async () => {
     await new Promise(resolve => setTimeout(resolve, 10));
     await session.abort();
     await assert.rejects(pending, /aborted/i);
+    const durable = await new JsonlSessionStore(join(root, ".sandora", "session.jsonl")).replay();
+    assert.ok(durable.some(event => event.type === "turn.cancel.requested"));
+    assert.ok(durable.some(event => event.type === "turn.aborted"));
     session.dispose();
   } finally {
     await rm(root, { recursive: true, force: true });

@@ -132,11 +132,23 @@ export async function runTurn({ provider, messages = [], tools = [], executeTool
 }
 
 export class JsonlSessionStore {
+  #sequence;
+  #tail = Promise.resolve();
   constructor(filePath) { this.filePath = resolve(filePath); }
   async append(event) {
     if (!event || typeof event !== "object" || Array.isArray(event)) throw new TypeError("event must be an object");
-    await mkdir(dirname(this.filePath), { recursive: true });
-    await appendFile(this.filePath, `${JSON.stringify({ ...event, timestamp: event.timestamp || new Date().toISOString() })}\n`, "utf8");
+    const pending = this.#tail.then(async () => {
+      if (this.#sequence === undefined) {
+        const existing = await this.replay();
+        this.#sequence = existing.reduce((max, item) => Math.max(max, Number.isInteger(item.sequence) ? item.sequence : 0), 0);
+      }
+      await mkdir(dirname(this.filePath), { recursive: true });
+      const envelope = { schemaVersion: 1, ...event, sequence: ++this.#sequence, timestamp: event.timestamp || new Date().toISOString() };
+      await appendFile(this.filePath, `${JSON.stringify(envelope)}\n`, "utf8");
+      return envelope;
+    });
+    this.#tail = pending.catch(() => {});
+    return pending;
   }
   async replay() {
     let text;
