@@ -90,14 +90,22 @@ The parent process runs with the permissions of the current user. Use a containe
 ```bash
 npm run check
 npm test
+npm run qa
+npm run qa:deps
 ```
+
+`npm run qa` is the deterministic local QA harness. It runs syntax checks, fixture
+streaming/tool/error and session-recovery E2E tests, bounded plugin/swarm checks,
+and a child-process cleanup smoke test. CI performs a clean `npm ci` first and
+runs the high-severity production dependency scan. The Pi-removal gate remains
+an explicit integration task; this harness does not claim Pi-free runtime proof.
 
 ## Current limitations
 
 - Direct computer-use control requires a future Windows adapter; browser tools can launch Chromium or connect via `SANDORA_CDP_URL`
 - The Sandora model remains in private evaluation
 - Subagents are read-only and limited to four concurrent tasks
-- No default GitHub Actions workflow is included yet
+- Provider credentials are not required for the fixture-based QA harness
 
 ## Acknowledgements
 
