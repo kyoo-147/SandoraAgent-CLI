@@ -40,6 +40,18 @@ export async function resolveBrowserArtifactPath(cwd, value) {
 
 function text(value, details = {}) { return { content: [{ type: "text", text: typeof value === "string" ? value : JSON.stringify(value, null, 2) }], details }; }
 function unsupported(operation) { return text({ supported: false, operation, reason: "Computer control is unavailable on this platform or no Windows adapter is installed." }, { supported: false }); }
+const delay = ms => new Promise(resolveDelay => setTimeout(resolveDelay, ms));
+async function stopProcess(child) {
+  if (!child || child.exitCode !== null || child.signalCode) return;
+  const closed = new Promise(resolveClose => child.once("close", resolveClose));
+  if (process.platform === "win32") spawn("taskkill", ["/pid", String(child.pid), "/t", "/f"], { stdio: "ignore", windowsHide: true });
+  else child.kill("SIGTERM");
+  await Promise.race([closed, delay(2_000)]);
+  if (child.exitCode === null && !child.signalCode) {
+    child.kill("SIGKILL");
+    await Promise.race([closed, delay(1_000)]);
+  }
+}
 function json(url, method = "GET") {
   return new Promise((resolvePromise, reject) => {
     const req = request(url, { method }, response => {
@@ -66,9 +78,10 @@ class CdpPage {
 
 async function connect(endpoint) {
   const base = endpoint || process.env.SANDORA_CDP_URL || "http://127.0.0.1:9222";
-  const info = await json(new URL("/json/version", base).href);
-  if (!info.webSocketDebuggerUrl) throw new Error("CDP endpoint did not provide webSocketDebuggerUrl");
-  const page = await new CdpPage(info.webSocketDebuggerUrl).connect();
+  const targets = await json(new URL("/json/list", base).href);
+  const target = targets.find(candidate => candidate.type === "page" && candidate.webSocketDebuggerUrl);
+  if (!target) throw new Error("CDP endpoint did not provide a page target");
+  const page = await new CdpPage(target.webSocketDebuggerUrl).connect();
   const id = String(nextId++); sessions.set(id, { page, process: null, endpoint: base }); return { id, page };
 }
 
@@ -79,8 +92,8 @@ async function launch(endpoint) {
   const child = spawn(executable, [`--headless=new`, `--remote-debugging-port=${port}`, "--no-first-run", "about:blank"], { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
   const base = `http://127.0.0.1:${port}`;
   let lastError = "";
-  for (let attempt = 0; attempt < 40; attempt++) { try { const result = await connect(base); sessions.get(result.id).process = child; return result; } catch (error) { lastError = error.message; await new Promise(resolvePromise => setTimeout(resolvePromise, 100)); } }
-  child.kill(); throw new Error(`Unable to launch/connect browser: ${lastError}`);
+  for (let attempt = 0; attempt < 40; attempt++) { try { const result = await connect(base); sessions.get(result.id).process = child; return result; } catch (error) { lastError = error.message; await delay(100); } }
+  await stopProcess(child); throw new Error(`Unable to launch/connect browser: ${lastError}`);
 }
 
 const browserLaunch = defineTool({ name: "browser_launch", label: "Browser launch", description: "Launch a headless Chromium browser or connect to SANDORA_CDP_URL.", parameters: Type.Object({ endpoint: Type.Optional(Type.String()) }), execute: async (_id, params) => { const result = await launch(params.endpoint); return text({ sessionId: result.id, connected: true }); } });
@@ -94,7 +107,7 @@ const browserType = browserAction("browser_type", "Type text into a CSS-selected
 const browserScroll = browserAction("browser_scroll", "Scroll the page by a number of pixels.", async (page, p) => await page.evaluate(`(()=>{window.scrollBy(${Number(p.x || 0)},${Number(p.y || 600)}); return {scrollX:scrollX,scrollY:scrollY}})()`), { x: Type.Optional(Type.Integer()), y: Type.Optional(Type.Integer()) });
 const browserTabs = defineTool({ name: "browser_tabs", label: "Browser tabs", description: "List open browser tabs, or switch to one by target id.", parameters: Type.Object({ sessionId: Type.String(), targetId: Type.Optional(Type.String()) }), execute: async (_id, p) => { const value = session(p); const tabs = await json(new URL("/json/list", value.endpoint).href); if (p.targetId) { const target = tabs.find(tab => tab.id === p.targetId); if (!target?.webSocketDebuggerUrl) throw new Error("Browser tab was not found or is not a page"); value.page.close(); value.page = await new CdpPage(target.webSocketDebuggerUrl).connect(); return text({ tabs: tabs.map(tab => ({ id: tab.id, type: tab.type, title: tab.title, url: tab.url })), switched: p.targetId }); } return text({ tabs: tabs.map(tab => ({ id: tab.id, type: tab.type, title: tab.title, url: tab.url })), switched: false }); } });
 const browserScreenshot = browserAction("browser_screenshot", "Capture a PNG screenshot, optionally saving it inside the workspace.", async (page, p, context) => { const artifactPath = p.path ? await resolveBrowserArtifactPath(context?.cwd, p.path) : null; const result = await page.call("Page.captureScreenshot", { format: "png", fromSurface: true }); if (artifactPath) await writeFile(artifactPath, Buffer.from(result.data, "base64")); return { pngBase64: artifactPath ? undefined : result.data, path: p.path || null }; }, { path: Type.Optional(Type.String()) });
-const browserCleanup = defineTool({ name: "browser_cleanup", label: "Browser cleanup", description: "Close one browser session and its launched process.", parameters: Type.Object({ sessionId: Type.String() }), execute: async (_id, p) => { const value = session(p); value.page.close(); if (value.process) value.process.kill(); sessions.delete(p.sessionId); return text({ cleaned: true, sessionId: p.sessionId }); } });
+const browserCleanup = defineTool({ name: "browser_cleanup", label: "Browser cleanup", description: "Close one browser session and its launched process.", parameters: Type.Object({ sessionId: Type.String() }), execute: async (_id, p) => { const value = session(p); try { value.page.close(); await stopProcess(value.process); } finally { sessions.delete(p.sessionId); } return text({ cleaned: true, sessionId: p.sessionId }); } });
 
 const computerNames = ["computer_observe", "computer_focus", "computer_click", "computer_type", "computer_key", "computer_scroll", "computer_screenshot"];
 const computerTools = computerNames.map(name => defineTool({ name, label: name, description: "Computer control with a capability-detected Windows adapter; explicit unsupported response when unavailable.", parameters: Type.Object({}), execute: async () => unsupported(name) }));
