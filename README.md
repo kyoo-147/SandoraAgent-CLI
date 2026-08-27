@@ -4,7 +4,7 @@
 
 **Sandora Agent CLI** is a terminal-first autonomous coding and research agent built on the [Pi agent runtime](https://github.com/earendil-works/pi). It can inspect a repository, edit files, run commands and tests, recover from failures, use Git, and delegate focused work to parallel subagents.
 
-> **Status:** Active MVP development. The public CLI is usable for local coding and research workflows; browser and direct computer-use tools are not enabled yet.
+> **Status:** Active MVP development. The public CLI is usable for local coding and research workflows; browser tools use optional Chromium/CDP, while direct computer-use tools fail closed when no Windows adapter is available.
 
 ## What it can do
 
@@ -94,7 +94,7 @@ npm test
 
 ## Current limitations
 
-- Browser and direct computer use are not enabled
+- Direct computer-use control requires a future Windows adapter; browser tools can launch Chromium or connect via `SANDORA_CDP_URL`
 - The Sandora model remains in private evaluation
 - Subagents are read-only and limited to four concurrent tasks
 - No default GitHub Actions workflow is included yet

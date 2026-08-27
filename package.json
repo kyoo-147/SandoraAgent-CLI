@@ -7,7 +7,7 @@
   "scripts": {
     "start": "node start.mjs",
     "chat": "node start.mjs",
-    "check": "node --check start.mjs && node --check src/subagents.mjs && node --check src/agent-manager.mjs && node --check src/runtime.mjs && node --check src/plugin-host.mjs",
+    "check": "node --check start.mjs && node --check src/subagents.mjs && node --check src/agent-manager.mjs && node --check src/runtime.mjs && node --check src/plugin-host.mjs && node --check src/browser-tools.mjs",
     "test": "node --test"
   },
   "dependencies": {

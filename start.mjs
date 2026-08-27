@@ -6,6 +6,7 @@ import { PNG } from "pngjs";
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager } from "@earendil-works/pi-coding-agent";
 import { delegateSubagentsTool } from "./src/subagents.mjs";
 import { createCodingTools } from "./src/coding-tools.mjs";
+import { browserTools } from "./src/browser-tools.mjs";
 
 const cwd = process.cwd();
 const CSI = "\x1b[";
@@ -174,7 +175,7 @@ const { session } = await createAgentSession({
   modelRuntime,
   resourceLoader: loader,
   tools: ["delegate_subagents"],
-  customTools: [delegateSubagentsTool, ...createCodingTools()],
+  customTools: [delegateSubagentsTool, ...createCodingTools(), ...browserTools],
   sessionManager: SessionManager.create(cwd),
 });
 
