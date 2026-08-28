@@ -102,7 +102,7 @@ Every output envelope includes `protocol: "sandora-jsonl"`, `version: 1`, a mono
 
 ## Safety
 
-Sandora is designed to work autonomously inside the selected workspace. Workspace tools enforce path and symlink checks, child processes receive a filtered environment, destructive shell patterns fail closed, commits require a feature branch and explicit paths, and force pushes are not exposed.
+Sandora is designed to work autonomously inside the selected workspace. Workspace tools enforce path and symlink checks, child processes receive a filtered environment, and `workspace_shell` runs one allowlisted development command directly without shell composition, expansion, redirection, absolute paths, or parent traversal. Commits require a feature branch and explicit paths, and force pushes are not exposed.
 
 Local merge and pull-request merge capabilities are disabled by default. Grant them explicitly with `SANDORA_ALLOW_LOCAL_MERGE=1` or `SANDORA_ALLOW_PR_MERGE=1`. PR merge also requires a non-draft mergeable PR with successful checks; allowing a PR with no checks additionally requires `SANDORA_ALLOW_UNCHECKED_PR_MERGE=1`.
 

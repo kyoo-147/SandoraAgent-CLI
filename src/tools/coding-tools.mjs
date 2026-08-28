@@ -1,7 +1,7 @@
 import process from "node:process";
 import { spawn } from "node:child_process";
 import { mkdir, readdir, readFile, realpath, stat, unlink, writeFile } from "node:fs/promises";
-import { dirname, relative, resolve, sep } from "node:path";
+import { dirname, relative, resolve, sep, win32, posix } from "node:path";
 import { defineTool } from "./registry.mjs";
 import { Type } from "typebox";
 
@@ -107,6 +107,33 @@ export function assertSafeShellCommand(command) {
   return normalized;
 }
 
+const DEVELOPMENT_COMMANDS = new Set(["node", "node.exe", "npm", "npm.cmd", "pnpm", "pnpm.cmd", "yarn", "yarn.cmd", "bun", "bun.exe", "cargo", "cargo.exe", "rustc", "rustc.exe", "go", "go.exe", "uv", "uv.exe", "pytest", "pytest.exe", "python", "python.exe", "python3"]);
+export function parseSafeDevelopmentCommand(command) {
+  const normalized = assertSafeShellCommand(command);
+  if (/[;&|<>`$%\r\n]/.test(normalized)) throw new Error("Shell composition, expansion, and redirection are not available; run one development command at a time");
+  const words = [];
+  let word = "", quote = null;
+  for (let index = 0; index < normalized.length; index += 1) {
+    const character = normalized[index];
+    if (quote) {
+      if (character === quote) quote = null;
+      else word += character;
+    } else if (character === "\"" || character === "'") quote = character;
+    else if (/\s/.test(character)) { if (word) { words.push(word); word = ""; } }
+    else word += character;
+  }
+  if (quote) throw new Error("Unterminated command quote");
+  if (word) words.push(word);
+  const [executable, ...args] = words;
+  if (!DEVELOPMENT_COMMANDS.has((executable || "").toLowerCase())) throw new Error("Command is not in the workspace development allowlist");
+  const dangerousInterpreterFlag = /^(?:-[cepr]|--(?:eval|print|require|import|input-type))(?:=|$)/i;
+  for (const arg of args) {
+    if (dangerousInterpreterFlag.test(arg)) throw new Error("Inline interpreter execution is not available");
+    if (win32.isAbsolute(arg) || posix.isAbsolute(arg) || /(^|[\\/])\.\.([\\/]|$)/.test(arg)) throw new Error("Command arguments must remain workspace-relative");
+  }
+  return { executable, args };
+}
+
 const schemas = {
   path: Type.String(),
   pathOptional: Type.Optional(Type.String()),
@@ -120,7 +147,7 @@ export function createCodingTools() {
     { name: "workspace_write", label: "Workspace write", description: "Create or replace a bounded text file.", parameters: Type.Object({ path: schemas.path, content: schemas.text }), execute: async (_id, p, _s, _u, ctx) => { const file = await safePath(ctx.cwd, p.path, { create: true }); if (Buffer.byteLength(p.content) > LIMITS.maxFileBytes) throw new Error("Content exceeds 2 MB"); await mkdir(dirname(file), { recursive: true }); await writeFile(file, p.content, "utf8", { flag: "w" }); return textResult(`Wrote ${relative(await workspaceRoot(ctx.cwd), file)}`, { bytes: Buffer.byteLength(p.content) }); } },
     { name: "workspace_edit", label: "Workspace edit", description: "Replace one exact text occurrence in a bounded file.", parameters: Type.Object({ path: schemas.path, oldText: schemas.text, newText: schemas.text }), execute: async (_id, p, _s, _u, ctx) => { const file = await regularFile(ctx.cwd, p.path); const before = await readFile(file, "utf8"); const count = before.split(p.oldText).length - 1; if (!p.oldText || count !== 1) throw new Error(count ? "Edit must match exactly once" : "Edit text not found"); const after = before.replace(p.oldText, p.newText); if (Buffer.byteLength(after) > LIMITS.maxFileBytes) throw new Error("Edited file exceeds 2 MB"); await writeFile(file, after, "utf8"); return textResult(`Edited ${p.path}`, { bytes: Buffer.byteLength(after) }); } },
     { name: "workspace_delete", label: "Workspace delete", description: "Delete one regular file inside the workspace. Directories are never removed.", parameters: Type.Object({ path: schemas.path }), execute: async (_id, p, _s, _u, ctx) => { const file = await regularFile(ctx.cwd, p.path); await unlink(file); return textResult(`Deleted ${relative(await workspaceRoot(ctx.cwd), file)}`); } },
-    { name: "workspace_shell", label: "Workspace shell", description: "Run a bounded development command in the workspace with a filtered environment and destructive-command guard.", parameters: Type.Object({ command: schemas.text, timeoutMs: Type.Optional(Type.Integer({ minimum: 1, maximum: LIMITS.timeoutMs })) }), execute: async (_id, p, signal, _u, ctx) => { const command = assertSafeShellCommand(p.command); return process.platform === "win32" ? runBounded(process.env.ComSpec || "cmd.exe", ["/d", "/s", "/c", command], { cwd: ctx.cwd, signal, timeoutMs: p.timeoutMs }) : runBounded("/bin/sh", ["-lc", command], { cwd: ctx.cwd, signal, timeoutMs: p.timeoutMs }); } },
+    { name: "workspace_shell", label: "Workspace shell", description: "Run one bounded allowlisted development command without shell composition, expansion, or redirection.", parameters: Type.Object({ command: schemas.text, timeoutMs: Type.Optional(Type.Integer({ minimum: 1, maximum: LIMITS.timeoutMs })) }), execute: async (_id, p, signal, _u, ctx) => { const { executable, args } = parseSafeDevelopmentCommand(p.command); return runBounded(executable, args, { cwd: ctx.cwd, signal, timeoutMs: p.timeoutMs }); } },
   ];
 }
 export function registerCodingTools(registry) { for (const tool of createCodingTools()) registry.register(tool); return registry; }

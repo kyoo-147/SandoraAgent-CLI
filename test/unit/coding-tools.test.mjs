@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { assertSafeShellCommand, createCodingTools, filteredEnvironment, runBounded, workspaceRoot } from "../../src/tools/coding-tools.mjs";
+import { assertSafeShellCommand, createCodingTools, filteredEnvironment, parseSafeDevelopmentCommand, runBounded, workspaceRoot } from "../../src/tools/coding-tools.mjs";
 
 const context = (cwd) => ({ cwd });
 const tool = (name) => createCodingTools().find((item) => item.name === name);
@@ -38,14 +38,17 @@ test("shell filters credentials and caps output", async () => {
   const env = filteredEnvironment({ PATH: "ok", OPENAI_API_KEY: "do-not-pass" });
   assert.equal(env.OPENAI_API_KEY, undefined);
   const root = await mkdtemp(join(tmpdir(), "sandora-tools-"));
-  const command = process.platform === "win32" ? "echo %OPENAI_API_KEY%" : "printf '%s' \"$OPENAI_API_KEY\"";
-  const result = await tool("workspace_shell").execute("1", { command }, null, null, context(root));
+  const result = await tool("workspace_shell").execute("1", { command: "node --version" }, null, null, context(root));
   assert.match(result.content[0].text, /exit 0/);
   assert.ok(!result.content[0].text.includes("do-not-pass"));
   assert.throws(() => assertSafeShellCommand("shutdown /s"), /safety policy/);
   assert.throws(() => assertSafeShellCommand("cd ../outside"), /safety policy/);
   assert.throws(() => assertSafeShellCommand("C:\\Windows\\System32\\cmd.exe"), /safety policy/);
   assert.equal(assertSafeShellCommand("npm test"), "npm test");
+  assert.deepEqual(parseSafeDevelopmentCommand('npm run "test suite"'), { executable: "npm", args: ["run", "test suite"] });
+  for (const command of ["curl https://example.com", "npm test && whoami", "node -e process.exit()", "node %USERPROFILE%/secret.js", "node $HOME/secret.js", "node ../outside.js", "node C:\\outside.js"]) {
+    assert.throws(() => parseSafeDevelopmentCommand(command), /allowlist|composition|Inline|workspace-relative|safety policy/);
+  }
   const capped = await runBounded(process.execPath, ["-e", "process.stdout.write('x'.repeat(25000))"], { cwd: root });
   assert.match(capped.content[0].text, /output truncated/);
   const timed = await runBounded(process.execPath, ["-e", "setTimeout(() => {}, 1000)"], { cwd: root, timeoutMs: 20 });
