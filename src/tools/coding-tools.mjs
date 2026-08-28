@@ -1,6 +1,7 @@
 import process from "node:process";
 import { spawn } from "node:child_process";
-import { mkdir, readdir, readFile, realpath, stat, unlink, writeFile } from "node:fs/promises";
+import { mkdir, open, readdir, readFile, realpath, rename, stat, unlink } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { dirname, relative, resolve, sep, win32, posix } from "node:path";
 import { defineTool } from "./registry.mjs";
 import { Type } from "typebox";
@@ -67,6 +68,42 @@ async function files(root, base, result = []) {
   return result;
 }
 function textResult(text, details) { return output(text, details); }
+export async function atomicReplaceFile(root, file, content, { publish = rename } = {}) {
+  if (Buffer.byteLength(content) > LIMITS.maxFileBytes) throw new Error("Content exceeds 2 MB");
+  const parent = dirname(file);
+  const initialRoot = await realpath(root);
+  const initialParent = await realpath(parent);
+  isInside(initialRoot, initialParent);
+  const temp = resolve(parent, `.sandora-${randomUUID()}.tmp`);
+  let handle;
+  try {
+    handle = await open(temp, "wx", 0o600);
+    await handle.writeFile(content, "utf8");
+    await handle.sync();
+    await handle.close();
+    handle = undefined;
+    const currentRoot = await realpath(root);
+    const currentParent = await realpath(parent);
+    if (currentRoot !== initialRoot || currentParent !== initialParent) throw new Error("Workspace parent changed before publication");
+    isInside(currentRoot, currentParent);
+    let published = false;
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      try { await publish(temp, file); published = true; break; }
+      catch (error) {
+        if (process.platform !== "win32" || !["EPERM", "EACCES"].includes(error.code) || attempt === 99) throw error;
+        await new Promise(resolveWait => setTimeout(resolveWait, 10));
+      }
+    }
+    if (!published) throw new Error("Atomic workspace publication did not complete");
+    let directorySync = "unsupported";
+    try { const directory = await open(currentParent, "r"); try { await directory.sync(); directorySync = "performed"; } finally { await directory.close(); } } catch (error) { directorySync = `unavailable:${error.code || "UNKNOWN"}`; }
+    return { directorySync };
+  } catch (error) {
+    if (handle) await handle.close().catch(() => {});
+    await unlink(temp).catch(() => {});
+    throw error;
+  }
+}
 
 export async function runBounded(command, args, { cwd, signal, timeoutMs = LIMITS.timeoutMs } = {}) {
   const root = await workspaceRoot(cwd);
@@ -173,8 +210,8 @@ export function createCodingTools() {
     { name: "workspace_list", label: "Workspace list", description: "List regular files inside the workspace.", parameters: Type.Object({ path: schemas.pathOptional }), execute: async (_id, p, _s, _u, ctx) => { const root = await workspaceRoot(ctx.cwd); const base = await safePath(root, p.path || "."); const info = await stat(base); const found = info.isDirectory() ? await files(root, base) : [base]; return textResult(found.map((f) => relative(root, f)).join("\n") || "No files.", { count: found.length }); } },
     { name: "workspace_read", label: "Workspace read", description: "Read a bounded UTF-8 file inside the workspace.", parameters: Type.Object({ path: schemas.path, offset: Type.Optional(Type.Integer({ minimum: 1 })), limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 2000 })) }), execute: async (_id, p, _s, _u, ctx) => { const file = await regularFile(ctx.cwd, p.path); const rows = (await readFile(file, "utf8")).split(/\r?\n/); const start = p.offset || 1, end = Math.min(rows.length, start + (p.limit || 200) - 1); return textResult(rows.slice(start - 1, end).map((r, i) => `${start + i}: ${r}`).join("\n"), { start, end }); } },
     { name: "workspace_search", label: "Workspace search", description: "Search bounded UTF-8 workspace files.", parameters: Type.Object({ pattern: schemas.text, path: schemas.pathOptional }), execute: async (_id, p, signal, _u, ctx) => { const root = await workspaceRoot(ctx.cwd), base = await safePath(root, p.path || "."), info = await stat(base); const found = info.isFile() ? [base] : await files(root, base); const matches = []; for (const file of found) { if (signal?.aborted) throw new Error("Workspace search aborted"); try { const rows = (await readFile(file, "utf8")).split(/\r?\n/); rows.forEach((line, i) => { if (matches.length < LIMITS.maxMatches && line.toLocaleLowerCase().includes(p.pattern.toLocaleLowerCase())) matches.push(`${relative(root, file)}:${i + 1}: ${line}`); }); } catch {} } return textResult(matches.join("\n") || "No matches.", { matchCount: matches.length }); } },
-    { name: "workspace_write", label: "Workspace write", description: "Create or replace a bounded text file.", parameters: Type.Object({ path: schemas.path, content: schemas.text }), execute: async (_id, p, _s, _u, ctx) => { const file = await safePath(ctx.cwd, p.path, { create: true }); if (Buffer.byteLength(p.content) > LIMITS.maxFileBytes) throw new Error("Content exceeds 2 MB"); await mkdir(dirname(file), { recursive: true }); await writeFile(file, p.content, "utf8", { flag: "w" }); return textResult(`Wrote ${relative(await workspaceRoot(ctx.cwd), file)}`, { bytes: Buffer.byteLength(p.content) }); } },
-    { name: "workspace_edit", label: "Workspace edit", description: "Replace one exact text occurrence in a bounded file.", parameters: Type.Object({ path: schemas.path, oldText: schemas.text, newText: schemas.text }), execute: async (_id, p, _s, _u, ctx) => { const file = await regularFile(ctx.cwd, p.path); const before = await readFile(file, "utf8"); const count = before.split(p.oldText).length - 1; if (!p.oldText || count !== 1) throw new Error(count ? "Edit must match exactly once" : "Edit text not found"); const after = before.replace(p.oldText, p.newText); if (Buffer.byteLength(after) > LIMITS.maxFileBytes) throw new Error("Edited file exceeds 2 MB"); await writeFile(file, after, "utf8"); return textResult(`Edited ${p.path}`, { bytes: Buffer.byteLength(after) }); } },
+    { name: "workspace_write", label: "Workspace write", description: "Create or replace a bounded text file.", parameters: Type.Object({ path: schemas.path, content: schemas.text }), execute: async (_id, p, _s, _u, ctx) => { const root = await workspaceRoot(ctx.cwd); const file = await safePath(root, p.path, { create: true }); if (Buffer.byteLength(p.content) > LIMITS.maxFileBytes) throw new Error("Content exceeds 2 MB"); await mkdir(dirname(file), { recursive: true }); const receipt = await atomicReplaceFile(root, file, p.content); return textResult(`Wrote ${relative(root, file)}`, { bytes: Buffer.byteLength(p.content), directorySync: receipt.directorySync }); } },
+    { name: "workspace_edit", label: "Workspace edit", description: "Replace one exact text occurrence in a bounded file.", parameters: Type.Object({ path: schemas.path, oldText: schemas.text, newText: schemas.text }), execute: async (_id, p, _s, _u, ctx) => { const root = await workspaceRoot(ctx.cwd); const file = await regularFile(root, p.path); const before = await readFile(file, "utf8"); const count = p.oldText ? before.split(p.oldText).length - 1 : 0; if (!p.oldText || count !== 1) throw new Error(count ? "Edit must match exactly once" : "Edit text not found"); const after = before.replace(p.oldText, p.newText); if (Buffer.byteLength(after) > LIMITS.maxFileBytes) throw new Error("Edited file exceeds 2 MB"); const receipt = await atomicReplaceFile(root, file, after); return textResult(`Edited ${p.path}`, { bytes: Buffer.byteLength(after), directorySync: receipt.directorySync }); } },
     { name: "workspace_delete", label: "Workspace delete", description: "Delete one regular file inside the workspace. Directories are never removed.", parameters: Type.Object({ path: schemas.path }), execute: async (_id, p, _s, _u, ctx) => { const file = await regularFile(ctx.cwd, p.path); await unlink(file); return textResult(`Deleted ${relative(await workspaceRoot(ctx.cwd), file)}`); } },
     { name: "workspace_shell", label: "Workspace shell", description: "Run one bounded allowlisted development command without shell composition, expansion, or redirection.", parameters: Type.Object({ command: schemas.text, timeoutMs: Type.Optional(Type.Integer({ minimum: 1, maximum: LIMITS.timeoutMs })) }), execute: async (_id, p, signal, _u, ctx) => { const { executable, args } = parseSafeDevelopmentCommand(p.command); return runBounded(executable, args, { cwd: ctx.cwd, signal, timeoutMs: p.timeoutMs }); } },
   ];

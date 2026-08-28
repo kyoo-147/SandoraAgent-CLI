@@ -112,6 +112,8 @@ Local merge and pull-request merge capabilities are disabled by default. Grant t
 
 Browser navigation pins the requested origin and refuses cross-origin redirects, links, observations, and tab switches by default. Grant an intentional cross-origin transition with `SANDORA_ALLOW_BROWSER_CROSS_ORIGIN=1`; consequential submit/send/delete/pay actions separately require `SANDORA_ALLOW_BROWSER_SUBMIT=1`.
 
+Launching without an endpoint creates and reports an `anonymous-ephemeral` browser profile owned by the Sandora session. Connecting to `SANDORA_CDP_URL` or an explicit CDP endpoint is treated as an existing, potentially signed-in profile and requires separate `SANDORA_ALLOW_EXISTING_BROWSER_PROFILE=1` authority; it is reported as `authorized-existing` and Sandora closes only its CDP connection rather than killing the external browser. Session disposal cleans all browser connections and verifies removal of profiles it launched.
+
 The parent process runs with the permissions of the current user. Use a container or OS sandbox when stronger isolation is required. Worker restrictions in this MVP are application-level, not a security boundary.
 
 ## Development

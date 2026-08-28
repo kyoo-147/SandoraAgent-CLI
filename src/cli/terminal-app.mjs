@@ -466,12 +466,15 @@ session.subscribe((event) => {
   dispatch(event);
 });
 
-function shutdown() {
+let shuttingDown = false;
+async function shutdown() {
+  if (shuttingDown) return;
+  shuttingDown = true;
   process.stdin.setRawMode?.(false);
   process.stdin.pause();
-  session.dispose();
-  process.stdout.write(`${CSI}?25h${CSI}?1049l${RESET}\n`);
-  process.exit(0);
+  try { await session.dispose(); }
+  catch (error) { process.stderr.write(`Sandora cleanup warning: ${error instanceof Error ? error.message : String(error)}\n`); }
+  finally { process.stdout.write(`${CSI}?25h${CSI}?1049l${RESET}\n`); process.exit(0); }
 }
 function requestAbort() {
   if (!state.streaming || state.abortRequested) return;

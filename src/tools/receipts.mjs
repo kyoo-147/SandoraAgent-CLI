@@ -21,8 +21,8 @@ export function canonicalInputSha256(value) {
   return createHash("sha256").update(canonical(value ?? {})).digest("hex");
 }
 
-function authorityFor(toolName) {
-  const rules = [[/^browser_click$/, "SANDORA_ALLOW_BROWSER_SUBMIT"], [/^worker_integrate$/, "SANDORA_ALLOW_WORKER_INTEGRATION"], [/^git_merge$/, "SANDORA_ALLOW_LOCAL_MERGE"], [/^github_pr_merge$/, "SANDORA_ALLOW_PR_MERGE"], [/^workspace_shell$/, "SANDORA_ALLOW_PACKAGE_SCRIPTS"]];
+function authorityFor(toolName, args) {
+  const rules = [[/^browser_click$/, "SANDORA_ALLOW_BROWSER_SUBMIT"], [/^browser_connect$/, "SANDORA_ALLOW_EXISTING_BROWSER_PROFILE"], [/^browser_launch$/, (args?.endpoint || process.env.SANDORA_CDP_URL) ? "SANDORA_ALLOW_EXISTING_BROWSER_PROFILE" : null], [/^worker_integrate$/, "SANDORA_ALLOW_WORKER_INTEGRATION"], [/^git_merge$/, "SANDORA_ALLOW_LOCAL_MERGE"], [/^github_pr_merge$/, "SANDORA_ALLOW_PR_MERGE"], [/^workspace_shell$/, "SANDORA_ALLOW_PACKAGE_SCRIPTS"]];
   const variable = rules.find(([pattern]) => pattern.test(toolName))?.[1];
   return variable ? { variable, granted: process.env[variable] === "1" } : { variable: null, granted: null };
 }
@@ -84,7 +84,7 @@ export class ToolReceiptStore {
     const startedPath = `${basePath}.started.json`;
     const terminalPath = `${basePath}.terminal.json`;
     const ownerToken = randomUUID();
-    const common = { receiptVersion: 2, receiptId, idempotencyKey, runtime: this.runtime, sessionId: this.sessionId, toolCallId, attempt: 1, toolName, inputSha256, ownerToken, approval: { status: "NOT_RECORDED", reference: null }, authority: authorityFor(toolName), preflight: "DELEGATED_TO_TOOL", enforcement: "APPLICATION_POLICY", sandbox: "UNAVAILABLE_APPLICATION_ONLY", durability: "FILE_FSYNC" };
+    const common = { receiptVersion: 2, receiptId, idempotencyKey, runtime: this.runtime, sessionId: this.sessionId, toolCallId, attempt: 1, toolName, inputSha256, ownerToken, approval: { status: "NOT_RECORDED", reference: null }, authority: authorityFor(toolName, args), preflight: "DELEGATED_TO_TOOL", enforcement: "APPLICATION_POLICY", sandbox: "UNAVAILABLE_APPLICATION_ONLY", durability: "FILE_FSYNC" };
     const started = sealRecord({ ...common, state: "STARTED", outcome: "PENDING", startedAt: new Date().toISOString() });
     await mkdir(dirname(startedPath), { recursive: true });
     try { await durableWriteExclusive(startedPath, started); }

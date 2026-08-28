@@ -1,9 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { assertSafeShellCommand, createCodingTools, filteredEnvironment, parseSafeDevelopmentCommand, runBounded, workspaceRoot } from "../../src/tools/coding-tools.mjs";
+import { assertSafeShellCommand, atomicReplaceFile, createCodingTools, filteredEnvironment, parseSafeDevelopmentCommand, runBounded, workspaceRoot } from "../../src/tools/coding-tools.mjs";
 
 const context = (cwd) => ({ cwd });
 const tool = (name) => createCodingTools().find((item) => item.name === name);
@@ -70,4 +70,23 @@ test("git observation is non-mutating and abort is reported", async () => {
   const result = await runBounded(process.platform === "win32" ? "cmd.exe" : "/bin/sh", process.platform === "win32" ? ["/c", "ping -n 5 127.0.0.1 > nul"] : ["-c", "sleep 5"], { cwd: root, signal: controller.signal, timeoutMs: 100 });
   assert.equal(result.details.aborted, true);
   assert.equal((await workspaceRoot(root)), root);
+});
+
+test("atomic replacement exposes only complete old or new content to readers", async () => {
+  const root = await mkdtemp(join(tmpdir(), "sandora-tools-"));
+  const file = join(root, "shared.txt");
+  const oldContent = "old-content\n".repeat(1000), newContent = "new-content\n".repeat(1000);
+  await writeFile(file, oldContent);
+  const reads = Array.from({ length: 4 }, async () => { for (let i = 0; i < 100; i += 1) { const value = await readFile(file, "utf8"); assert.ok(value === oldContent || value === newContent); } });
+  for (let i = 0; i < 20; i += 1) await atomicReplaceFile(root, file, i % 2 ? oldContent : newContent);
+  await Promise.all(reads);
+});
+
+test("publication failure preserves destination and cleans exclusive temp", async () => {
+  const root = await mkdtemp(join(tmpdir(), "sandora-tools-"));
+  const file = join(root, "failure.txt");
+  await writeFile(file, "old");
+  await assert.rejects(() => atomicReplaceFile(root, file, "new", { publish: async () => { throw new Error("injected publication failure"); } }), /injected/);
+  assert.equal(await readFile(file, "utf8"), "old");
+  assert.deepEqual((await readdir(root)).filter((name) => name.startsWith(".sandora-") && name.endsWith(".tmp")), []);
 });

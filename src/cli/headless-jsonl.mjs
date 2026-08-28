@@ -143,5 +143,5 @@ try {
   catch { process.stderr.write(`${error instanceof Error ? error.stack || error.message : String(error)}\n`); }
   process.exitCode = 1;
 } finally {
-  session?.dispose();
+  await session?.dispose();
 }

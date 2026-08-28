@@ -82,3 +82,14 @@ test("wrapped tools preserve provider callback identity and record blocked outco
     assert.doesNotMatch(JSON.stringify(record), /opaque|consequential action/);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+test("browser launch receipts bind existing-profile authority when an endpoint is requested", async () => {
+  const root = await rootFixture(); const previous = process.env.SANDORA_ALLOW_EXISTING_BROWSER_PROFILE;
+  try {
+    process.env.SANDORA_ALLOW_EXISTING_BROWSER_PROFILE = "1";
+    const receipts = new ToolReceiptStore({ cwd: root, sessionId: "browser-profile", runtime: "native" });
+    await receipts.execute({ toolCallId: "launch-existing", toolName: "browser_launch", args: { endpoint: "http://127.0.0.1:9222" }, invoke: async () => "connected" });
+    const { record } = await recordAt(root, "browser-profile");
+    assert.deepEqual(record.authority, { variable: "SANDORA_ALLOW_EXISTING_BROWSER_PROFILE", granted: true });
+  } finally { if (previous === undefined) delete process.env.SANDORA_ALLOW_EXISTING_BROWSER_PROFILE; else process.env.SANDORA_ALLOW_EXISTING_BROWSER_PROFILE = previous; await rm(root, { recursive: true, force: true }); }
+});

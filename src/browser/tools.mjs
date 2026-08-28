@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
-import { request } from "node:http";
+import { request as httpRequest } from "node:http";
+import { request as httpsRequest } from "node:https";
 import { lstat, mkdir, mkdtemp, open, realpath, rm, stat } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
 import { tmpdir } from "node:os";
@@ -68,10 +69,13 @@ function text(value, details = {}) { return { content: [{ type: "text", text: ty
 function unsupported(operation) { return text({ supported: false, operation, reason: "Computer control is unavailable on this platform or no Windows adapter is installed." }, { supported: false }); }
 const delay = ms => new Promise(resolveDelay => setTimeout(resolveDelay, ms));
 async function stopProcess(child) {
-  if (!child || child.exitCode !== null || child.signalCode) return;
+  if (!child) return;
   const closed = new Promise(resolveClose => child.once("close", resolveClose));
-  if (process.platform === "win32") spawn("taskkill", ["/pid", String(child.pid), "/t", "/f"], { stdio: "ignore", windowsHide: true });
-  else child.kill("SIGTERM");
+  if (process.platform === "win32") {
+    const killer = spawn("taskkill", ["/pid", String(child.pid), "/t", "/f"], { stdio: "ignore", windowsHide: true });
+    await Promise.race([new Promise(resolveKiller => { killer.once("close", resolveKiller); killer.once("error", resolveKiller); }), delay(2_000)]);
+    if (child.exitCode !== null || child.signalCode) return;
+  } else if (child.exitCode === null && !child.signalCode) child.kill("SIGTERM");
   await Promise.race([closed, delay(2_000)]);
   if (child.exitCode === null && !child.signalCode) {
     child.kill("SIGKILL");
@@ -140,7 +144,7 @@ async function browserExecutable() {
 }
 function json(url, method = "GET", signal) {
   return new Promise((resolvePromise, reject) => {
-    const req = request(url, { method }, response => {
+    const req = (new URL(url).protocol === "https:" ? httpsRequest : httpRequest)(url, { method }, response => {
       let body = ""; response.setEncoding("utf8"); response.on("data", chunk => { body += chunk; });
       response.on("end", () => { try { const value = JSON.parse(body); response.statusCode >= 400 ? reject(new Error(`CDP HTTP ${response.statusCode}`)) : resolvePromise(value); } catch (error) { reject(error); } });
     });
@@ -174,29 +178,30 @@ async function assertCurrentPageOrigin(value, signal) {
   return url;
 }
 
-async function connect(endpoint) {
+async function connect(endpoint, { ownedLaunch = false, ownerId = null } = {}) {
   const base = allowedCdpEndpoint(endpoint || process.env.SANDORA_CDP_URL || "http://127.0.0.1:9222");
+  if (!ownedLaunch && process.env.SANDORA_ALLOW_EXISTING_BROWSER_PROFILE !== "1") throw new Error("Connecting to an existing browser profile requires SANDORA_ALLOW_EXISTING_BROWSER_PROFILE=1 explicit authority");
   const targets = await json(new URL("/json/list", base).href);
   const target = targets.find(candidate => candidate.type === "page" && candidate.webSocketDebuggerUrl);
   if (!target) throw new Error("CDP endpoint did not provide a page target");
   const page = await new CdpPage(allowedCdpWebSocket(base, target.webSocketDebuggerUrl)).connect();
-  const id = String(nextId++); const value = { page, process: null, endpoint: base, allowedOrigin: null }; sessions.set(id, value); bindPage(value); return { id, page };
+  const id = String(nextId++); const value = { page, process: null, endpoint: base, allowedOrigin: null, ownerId, profileMode: ownedLaunch ? "anonymous-ephemeral" : "authorized-existing" }; sessions.set(id, value); bindPage(value); return { id, page, profileMode: value.profileMode };
 }
 
-async function launch(endpoint) {
-  if (endpoint || process.env.SANDORA_CDP_URL) return connect(endpoint);
+async function launch(endpoint, ownerId) {
+  if (endpoint || process.env.SANDORA_CDP_URL) return connect(endpoint, { ownerId });
   const executable = await browserExecutable();
   const port = 9222 + Math.floor(Math.random() * 500);
   const profileDir = await mkdtemp(join(tmpdir(), "sandora-browser-"));
   const child = spawn(executable, [`--headless=new`, `--remote-debugging-port=${port}`, `--user-data-dir=${profileDir}`, "--no-first-run", "--no-default-browser-check", "about:blank"], { env: filteredEnvironment(), stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
   const base = `http://127.0.0.1:${port}`;
   let lastError = "";
-  for (let attempt = 0; attempt < 40; attempt++) { try { const result = await connect(base); Object.assign(sessions.get(result.id), { process: child, profileDir }); return result; } catch (error) { lastError = error.message; await delay(100); } }
+  for (let attempt = 0; attempt < 40; attempt++) { try { const result = await connect(base, { ownedLaunch: true, ownerId }); Object.assign(sessions.get(result.id), { process: child, profileDir }); return result; } catch (error) { lastError = error.message; await delay(100); } }
   await stopProcess(child); await rm(profileDir, { recursive: true, force: true }); throw new Error(`Unable to launch/connect browser: ${lastError}`);
 }
 
-const browserLaunch = defineTool({ name: "browser_launch", label: "Browser launch", description: "Launch a headless Chromium browser or connect to SANDORA_CDP_URL.", parameters: Type.Object({ endpoint: Type.Optional(Type.String()) }), execute: async (_id, params) => { const result = await launch(params.endpoint); return text({ sessionId: result.id, connected: true }); } });
-const browserConnect = defineTool({ name: "browser_connect", label: "Browser connect", description: "Connect to an existing Chrome DevTools Protocol endpoint.", parameters: Type.Object({ endpoint: Type.String() }), execute: async (_id, params) => { const result = await connect(params.endpoint); return text({ sessionId: result.id, connected: true }); } });
+const browserLaunch = defineTool({ name: "browser_launch", label: "Browser launch", description: "Launch an isolated anonymous headless Chromium browser, or connect to an explicitly authorized existing CDP profile.", parameters: Type.Object({ endpoint: Type.Optional(Type.String()) }), execute: async (_id, params, _signal, _update, context) => { const result = await launch(params.endpoint, context?.resourceOwnerId); return text({ sessionId: result.id, connected: true, profileMode: result.profileMode }); } });
+const browserConnect = defineTool({ name: "browser_connect", label: "Browser connect", description: "Connect to an existing Chrome DevTools Protocol profile only with explicit existing-profile authority.", parameters: Type.Object({ endpoint: Type.String() }), execute: async (_id, params, _signal, _update, context) => { const result = await connect(params.endpoint, { ownerId: context?.resourceOwnerId }); return text({ sessionId: result.id, connected: true, profileMode: result.profileMode }); } });
 function session(params) { const value = sessions.get(params.sessionId); if (!value) throw new Error("Unknown browser session"); return value; }
 function clearBrowserRefs(value) { value.observationGeneration = (value.observationGeneration || 0) + 1; value.refs = new Map(); }
 function elementSignature(element) { return JSON.stringify({ tag: element.tag, role: element.role, text: element.text, type: element.type, name: element.name, href: element.href || null }); }
@@ -217,9 +222,21 @@ const browserAction = (name, description, action, properties) => defineTool({ na
 const browserClick = browserAction("browser_click", "Click an element using a fresh opaque ref from browser_observe.", async (page, p, _context, signal, value) => { await assertCurrentPageOrigin(value, signal); const record = consumeElementRef(value, p); assertConsequentialAction(record); if (record.element.href) assertAllowedOrigin(value.allowedOrigin, record.element.href); const result = await page.evaluate(`(()=>{const elements=[...document.querySelectorAll('a,button,input,textarea,select,[role="button"]')];const e=elements[${record.index}];if(!e) throw new Error('STALE_REF');const signature=JSON.stringify({tag:e.tagName.toLowerCase(),role:e.getAttribute('role'),text:(e.innerText||e.value||e.getAttribute('aria-label')||'').trim().slice(0,300),type:e.getAttribute('type'),name:e.getAttribute('name'),href:e.href||null});if(signature!==${JSON.stringify(record.signature)}) throw new Error('STALE_REF');e.click();return {clicked:true,tag:e.tagName.toLowerCase()}})()`, true, signal); clearBrowserRefs(value); return result; }, { ref: Type.String() });
 const browserType = browserAction("browser_type", "Type text into an input using a fresh opaque ref from browser_observe.", async (page, p, _context, signal, value) => { await assertCurrentPageOrigin(value, signal); const record = consumeElementRef(value, p); const result = await page.evaluate(`(()=>{const elements=[...document.querySelectorAll('a,button,input,textarea,select,[role="button"]')];const e=elements[${record.index}];if(!e) throw new Error('STALE_REF');const signature=JSON.stringify({tag:e.tagName.toLowerCase(),role:e.getAttribute('role'),text:(e.innerText||e.value||e.getAttribute('aria-label')||'').trim().slice(0,300),type:e.getAttribute('type'),name:e.getAttribute('name'),href:e.href||null});if(signature!==${JSON.stringify(record.signature)}) throw new Error('STALE_REF');if(!/^(input|textarea)$/i.test(e.tagName)) throw new Error('Element is not text-editable');e.focus();e.value=${JSON.stringify(p.text)};e.dispatchEvent(new Event('input',{bubbles:true}));e.dispatchEvent(new Event('change',{bubbles:true}));return {typed:true}})()`, true, signal); clearBrowserRefs(value); return result; }, { text: Type.String(), ref: Type.String() });
 const browserScroll = browserAction("browser_scroll", "Scroll the page by a number of pixels.", async (page, p, _context, signal) => await page.evaluate(`(()=>{window.scrollBy(${Number(p.x || 0)},${Number(p.y || 600)}); return {scrollX:scrollX,scrollY:scrollY}})()`, true, signal), { x: Type.Optional(Type.Integer()), y: Type.Optional(Type.Integer()) });
-const browserTabs = defineTool({ name: "browser_tabs", label: "Browser tabs", description: "List open browser tabs, or switch to one by target id.", parameters: Type.Object({ sessionId: Type.String(), targetId: Type.Optional(Type.String()) }), execute: async (_id, p) => { const value = session(p); const tabs = await json(new URL("/json/list", value.endpoint).href); if (p.targetId) { const target = tabs.find(tab => tab.id === p.targetId); if (!target?.webSocketDebuggerUrl) throw new Error("Browser tab was not found or is not a page"); assertAllowedOrigin(value.allowedOrigin, target.url); clearBrowserRefs(value); value.page.close(); value.page = await new CdpPage(allowedCdpWebSocket(value.endpoint, target.webSocketDebuggerUrl)).connect(); if (!value.allowedOrigin && /^https?:/i.test(target.url)) value.allowedOrigin = new URL(target.url).origin; bindPage(value); return text({ tabs: tabs.map(tab => ({ id: tab.id, type: tab.type, title: tab.title, url: tab.url })), switched: p.targetId }); } return text({ tabs: tabs.map(tab => ({ id: tab.id, type: tab.type, title: tab.title, url: tab.url })), switched: false }); } });
+const browserTabs = defineTool({ name: "browser_tabs", label: "Browser tabs", description: "List open browser tabs, or switch to one by target id.", parameters: Type.Object({ sessionId: Type.String(), targetId: Type.Optional(Type.String()) }), execute: async (_id, p) => { const value = session(p); const tabs = await json(new URL("/json/list", value.endpoint).href); if (p.targetId) { const target = tabs.find(tab => tab.id === p.targetId); if (!target?.webSocketDebuggerUrl) throw new Error("Browser tab was not found or is not a page"); assertAllowedOrigin(value.allowedOrigin, target.url); const replacement = await new CdpPage(allowedCdpWebSocket(value.endpoint, target.webSocketDebuggerUrl)).connect(); const previous = value.page; clearBrowserRefs(value); value.page = replacement; if (!value.allowedOrigin && /^https?:/i.test(target.url)) value.allowedOrigin = new URL(target.url).origin; bindPage(value); previous.close(); return text({ tabs: tabs.map(tab => ({ id: tab.id, type: tab.type, title: tab.title, url: tab.url })), switched: p.targetId }); } return text({ tabs: tabs.map(tab => ({ id: tab.id, type: tab.type, title: tab.title, url: tab.url })), switched: false }); } });
 const browserScreenshot = browserAction("browser_screenshot", "Capture a PNG screenshot, optionally creating a new non-overwriting artifact inside the workspace.", async (page, p, context, signal) => { const result = await page.call("Page.captureScreenshot", { format: "png", fromSurface: true }, signal); if (p.path) await writeBrowserArtifact(context?.cwd, p.path, Buffer.from(result.data, "base64")); return { pngBase64: p.path ? undefined : result.data, path: p.path || null }; }, { path: Type.Optional(Type.String()) });
-const browserCleanup = defineTool({ name: "browser_cleanup", label: "Browser cleanup", description: "Close one browser session, its launched process, and its isolated temporary profile.", parameters: Type.Object({ sessionId: Type.String() }), execute: async (_id, p) => { const value = session(p); try { value.page.close(); await stopProcess(value.process); if (value.profileDir) await rm(value.profileDir, { recursive: true, force: true }); } finally { sessions.delete(p.sessionId); } return text({ cleaned: true, sessionId: p.sessionId }); } });
+async function cleanupBrowserSession(sessionId, value) {
+  try {
+    if (value.process) await value.page.call("Browser.close").catch(() => {});
+    value.page.close();
+    await stopProcess(value.process);
+    if (value.profileDir) {
+      for (let attempt = 0; attempt < 20; attempt += 1) { await rm(value.profileDir, { recursive: true, force: true }); try { await stat(value.profileDir); await delay(50); } catch (error) { if (error.code === "ENOENT") break; throw error; } }
+      try { await stat(value.profileDir); throw new Error("Browser profile cleanup could not be verified"); } catch (error) { if (error.code !== "ENOENT") throw error; }
+    }
+  } finally { sessions.delete(sessionId); }
+}
+export async function cleanupBrowserSessions(ownerId) { for (const [sessionId, value] of [...sessions]) if (ownerId === undefined || value.ownerId === ownerId) await cleanupBrowserSession(sessionId, value); }
+const browserCleanup = defineTool({ name: "browser_cleanup", label: "Browser cleanup", description: "Close one browser session, its launched process, and its isolated temporary profile.", parameters: Type.Object({ sessionId: Type.String() }), execute: async (_id, p) => { await cleanupBrowserSession(p.sessionId, session(p)); return text({ cleaned: true, sessionId: p.sessionId }); } });
 
 const computerNames = ["computer_observe", "computer_focus", "computer_click", "computer_type", "computer_key", "computer_scroll", "computer_screenshot"];
 const computerTools = computerNames.map(name => defineTool({ name, label: name, description: "Computer control with a capability-detected Windows adapter; explicit unsupported response when unavailable.", parameters: Type.Object({}), execute: async () => unsupported(name) }));

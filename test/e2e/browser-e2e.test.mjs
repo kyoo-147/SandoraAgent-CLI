@@ -5,6 +5,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { browserTools } from "../../src/browser/tools.mjs";
+import { createSandoraSession } from "../../src/runtime/create-session.mjs";
 
 const backendConfigured = Boolean(process.env.SANDORA_BROWSER_PATH || process.env.SANDORA_CDP_URL);
 const tool = name => browserTools.find(candidate => candidate.name === name);
@@ -52,6 +53,24 @@ test("real CDP flow observes structured content before screenshot and cleans up"
     const closed = new Promise(resolveClose => server.close(resolveClose));
     server.closeAllConnections();
     await closed;
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
+
+test("disposing a Sandora session cleans its owned browser sessions", { skip: backendConfigured ? false : "set SANDORA_BROWSER_PATH or SANDORA_CDP_URL to run real browser E2E", timeout: 30_000 }, async () => {
+  const workspace = await mkdtemp(resolve(tmpdir(), "sandora-browser-owner-"));
+  const provider = { model: "unused", async *stream() {} };
+  const owner = await createSandoraSession({ core: "native", cwd: workspace, customTools: browserTools, provider, resourceOwnerId: "owner-a" });
+  const peer = await createSandoraSession({ core: "native", cwd: workspace, customTools: browserTools, provider, resourceOwnerId: "owner-b" });
+  const sessionId = value(await tool("browser_launch").execute("owner", {}, undefined, undefined, { resourceOwnerId: "owner-a" })).sessionId;
+  const peerSessionId = value(await tool("browser_launch").execute("peer", {}, undefined, undefined, { resourceOwnerId: "owner-b" })).sessionId;
+  try {
+    await owner.dispose();
+    await assert.rejects(() => tool("browser_observe").execute("owner", { sessionId }), /Unknown browser session/);
+    assert.equal(value(await tool("browser_observe").execute("peer", { sessionId: peerSessionId })).url, "about:blank");
+  } finally {
+    await owner.dispose().catch(() => {});
+    await peer.dispose().catch(() => {});
     await rm(workspace, { recursive: true, force: true });
   }
 });

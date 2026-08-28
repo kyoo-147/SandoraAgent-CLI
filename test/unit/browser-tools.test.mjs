@@ -39,6 +39,20 @@ test("browser endpoint policy rejects remote CDP without explicit authority", as
   await assert.rejects(() => connect.execute("test", { endpoint: "file:///tmp/cdp" }), /HTTP or HTTPS/);
 });
 
+test("existing browser profiles require separate explicit authority", async () => {
+  const connect = browserTools.find(tool => tool.name === "browser_connect");
+  const previous = process.env.SANDORA_ALLOW_EXISTING_BROWSER_PROFILE;
+  try { delete process.env.SANDORA_ALLOW_EXISTING_BROWSER_PROFILE; await assert.rejects(() => connect.execute("test", { endpoint: "http://127.0.0.1:1" }), /EXISTING_BROWSER_PROFILE/); }
+  finally { if (previous === undefined) delete process.env.SANDORA_ALLOW_EXISTING_BROWSER_PROFILE; else process.env.SANDORA_ALLOW_EXISTING_BROWSER_PROFILE = previous; }
+});
+
+test("HTTPS CDP discovery uses an HTTPS client instead of rejecting the protocol", async () => {
+  const connect = browserTools.find(tool => tool.name === "browser_connect");
+  const previous = process.env.SANDORA_ALLOW_EXISTING_BROWSER_PROFILE;
+  try { process.env.SANDORA_ALLOW_EXISTING_BROWSER_PROFILE = "1"; await assert.rejects(() => connect.execute("test", { endpoint: "https://127.0.0.1:1" }), error => error?.code !== "ERR_INVALID_PROTOCOL"); }
+  finally { if (previous === undefined) delete process.env.SANDORA_ALLOW_EXISTING_BROWSER_PROFILE; else process.env.SANDORA_ALLOW_EXISTING_BROWSER_PROFILE = previous; }
+});
+
 test("CDP target WebSockets remain pinned to the authorized discovery endpoint", () => {
   assert.equal(allowedCdpWebSocket("http://127.0.0.1:9222", "ws://127.0.0.1:9222/devtools/page/one"), "ws://127.0.0.1:9222/devtools/page/one");
   assert.equal(allowedCdpWebSocket("https://127.0.0.1:443", "wss://127.0.0.1:443/devtools/page/one"), "wss://127.0.0.1/devtools/page/one");
