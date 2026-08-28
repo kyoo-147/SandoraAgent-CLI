@@ -1,6 +1,6 @@
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdir, readFile, writeFile, rm, access, lstat, realpath } from "node:fs/promises";
+import { mkdir, readFile, writeFile, rm, access, lstat, realpath, rename } from "node:fs/promises";
 import { Buffer } from "node:buffer";
 import { dirname, resolve, relative, basename } from "node:path";
 
@@ -42,6 +42,7 @@ export class GitWorktreeManager {
 
   pathFor(workerId) { return resolve(this.worktreeRoot, safeId(workerId)); }
   metadataPath(workerId) { return resolve(this.metadataRoot, `${safeId(workerId)}.json`); }
+  intentPath(workerId) { return resolve(this.metadataRoot, `${safeId(workerId)}.intent.json`); }
   ownedIgnorePaths() {
     const parent = dirname(this.worktreeRoot);
     return parent === this.repoRoot ? [relative(this.repoRoot, this.worktreeRoot)] : [relative(this.repoRoot, parent)];
@@ -65,10 +66,25 @@ export class GitWorktreeManager {
       throw new GitWorktreeError(`Worker worktree already exists: ${path}`);
     } catch (error) { if (error instanceof GitWorktreeError) throw error; }
     const baseCommit = (await this.git(["rev-parse", "--verify", `${baseRef}^{commit}`])).stdout.trim();
-    const result = await this.git(["worktree", "add", "-b", branchName, path, baseCommit]);
-    const metadata = { version: 1, workerId, owner, branch: branchName, baseRef: baseCommit, path, repoRoot: this.repoRoot, createdAt: new Date().toISOString(), ownershipToken: `${workerId}:${Date.now()}`, sourceDirty: dirty };
-    await writeFile(this.metadataPath(workerId), JSON.stringify(metadata, null, 2) + "\n", "utf8");
-    return { ...metadata, output: result.stdout.trim() };
+    const ownershipToken = `${workerId}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
+    const intent = { version: 1, phase: "reserved", workerId, owner, branch: branchName, baseRef: baseCommit, path, repoRoot: this.repoRoot, ownershipToken, createdAt: new Date().toISOString() };
+    try { await writeFile(this.intentPath(workerId), JSON.stringify(intent, null, 2) + "\n", { encoding: "utf8", flag: "wx" }); }
+    catch (error) { if (error.code === "EEXIST") throw new GitWorktreeError(`Worker ${workerId} already has an active creation intent`); throw error; }
+    let worktreeAdded = false;
+    try {
+      const result = await this.git(["worktree", "add", "-b", branchName, path, baseCommit]);
+      worktreeAdded = true;
+      const metadata = { ...intent, phase: "ready", sourceDirty: dirty };
+      const temporary = `${this.metadataPath(workerId)}.${process.pid}.tmp`;
+      await writeFile(temporary, JSON.stringify(metadata, null, 2) + "\n", { encoding: "utf8", flag: "wx" });
+      await rename(temporary, this.metadataPath(workerId));
+      await rm(this.intentPath(workerId), { force: true });
+      return { ...metadata, output: result.stdout.trim() };
+    } catch (error) {
+      if (!worktreeAdded) await rm(this.intentPath(workerId), { force: true });
+      else await writeFile(this.intentPath(workerId), JSON.stringify({ ...intent, phase: "worktree-added-metadata-incomplete", error: error instanceof Error ? error.message : String(error) }, null, 2) + "\n", "utf8");
+      throw error;
+    }
   }
 
   async metadata(workerId) { return JSON.parse(await readFile(this.metadataPath(workerId), "utf8")); }

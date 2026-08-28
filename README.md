@@ -111,7 +111,7 @@ runs the high-severity production dependency scan.
 
 ## Current limitations
 
-- Direct computer-use control requires a future Windows adapter; browser tools can launch Chromium or connect via `SANDORA_CDP_URL`
+- Direct computer-use control requires a future Windows adapter; browser tools can launch Chromium or connect to an authorized CDP endpoint, use short-lived observed element refs, reject stale refs, and gate consequential clicks
 - The Sandora model remains in private evaluation
 - Read-only subagents are limited to four concurrent tasks; writable workers require isolated Git worktrees and explicit integration authority
 - Provider credentials are not required for the fixture-based QA harness

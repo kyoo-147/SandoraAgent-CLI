@@ -12,7 +12,7 @@ const value = result => JSON.parse(result.content[0].text);
 
 test("real CDP flow observes structured content before screenshot and cleans up", { skip: backendConfigured ? false : "set SANDORA_BROWSER_PATH or SANDORA_CDP_URL to run real browser E2E", timeout: 30_000 }, async () => {
   const workspace = await mkdtemp(resolve(tmpdir(), "sandora-browser-e2e-"));
-  const html = "<title>Sandora E2E</title><input id='name' aria-label='Name'><button id='ship' aria-label='Ship' onclick=\"document.querySelector('p').textContent='submitted '+document.querySelector('#name').value\">Go</button><p>structured observation</p>";
+  const html = "<title>Sandora E2E</title><input id='name' aria-label='Name'><button id='ship' type='button' aria-label='Ship' onclick=\"document.querySelector('p').textContent='submitted '+document.querySelector('#name').value\">Go</button><button type='submit'>Send</button><p>structured observation</p>";
   const server = createServer((_request, response) => { response.writeHead(200, { "content-type": "text/html" }); response.end(html); });
   await new Promise((resolveListen, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolveListen); });
   let sessionId;
@@ -28,9 +28,15 @@ test("real CDP flow observes structured content before screenshot and cleans up"
     }
     assert.equal(observed.title, "Sandora E2E");
     assert.match(observed.text, /structured observation/);
-    assert.deepEqual(observed.elements.map(element => element.text), ["Name", "Go"]);
-    await tool("browser_type").execute("e2e", { sessionId, selector: "#name", text: "Sandora" });
-    await tool("browser_click").execute("e2e", { sessionId, selector: "#ship" });
+    assert.deepEqual(observed.elements.map(element => element.text), ["Name", "Go", "Send"]);
+    const nameRef = observed.elements.find(element => element.text === "Name").ref;
+    await tool("browser_type").execute("e2e", { sessionId, ref: nameRef, text: "Sandora" });
+    await assert.rejects(() => tool("browser_click").execute("e2e", { sessionId, ref: nameRef }), /STALE_REF/);
+    observed = value(await tool("browser_observe").execute("e2e", { sessionId }));
+    const sendRef = observed.elements.find(element => element.text === "Send").ref;
+    await assert.rejects(() => tool("browser_click").execute("e2e", { sessionId, ref: sendRef }), /consequential action blocked/);
+    const shipRef = observed.elements.find(element => element.text === "Go").ref;
+    await tool("browser_click").execute("e2e", { sessionId, ref: shipRef });
     observed = value(await tool("browser_observe").execute("e2e", { sessionId }));
     assert.match(observed.text, /submitted Sandora/);
 
@@ -38,8 +44,9 @@ test("real CDP flow observes structured content before screenshot and cleans up"
     assert.ok((await readFile(resolve(workspace, "artifacts/page.png"))).length > 100);
   } finally {
     if (sessionId) await tool("browser_cleanup").execute("e2e", { sessionId });
+    const closed = new Promise(resolveClose => server.close(resolveClose));
     server.closeAllConnections();
-    await new Promise(resolveClose => server.close(resolveClose));
+    await closed;
     await rm(workspace, { recursive: true, force: true });
   }
 });

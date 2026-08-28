@@ -83,3 +83,18 @@ test("clean but unintegrated worker remains recoverable", async () => {
 test("integration order rejects dependency cycles", () => {
   assert.throws(() => GitWorktreeManager.integrationOrder([{ workerId: "a", dependsOn: ["b"] }, { workerId: "b", dependsOn: ["a"] }]), /cycle/);
 });
+
+test("concurrent creation of the same worker publishes one atomic owner", async () => {
+  const root = await fixture();
+  const manager = new GitWorktreeManager({ repoRoot: root, worktreeRoot: resolve(root, ".workers") });
+  try {
+    const results = await Promise.allSettled([manager.create("same-worker"), manager.create("same-worker")]);
+    assert.equal(results.filter(result => result.status === "fulfilled").length, 1);
+    assert.equal(results.filter(result => result.status === "rejected").length, 1);
+    const metadata = await manager.metadata("same-worker");
+    assert.equal(metadata.phase, "ready");
+    assert.match(metadata.ownershipToken, /^same-worker:/);
+    const registered = (await git(root, "worktree", "list", "--porcelain")).stdout;
+    assert.equal((registered.match(/branch refs\/heads\/sandora\/swarm\/same-worker/g) || []).length, 1);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});

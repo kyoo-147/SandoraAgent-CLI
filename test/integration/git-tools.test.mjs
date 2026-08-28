@@ -64,9 +64,11 @@ test("GitHub merge uses deterministic gh preflight and requires successful open 
   try {
     const runGitHub = async args => {
       calls.push(args);
-      const output = args[1] === "view"
-        ? JSON.stringify({ state: "OPEN", isDraft: false, mergeable: "MERGEABLE", reviewDecision: "APPROVED", statusCheckRollup: [{ name: "qa", conclusion: "SUCCESS" }] })
-        : "merged";
+      const output = args[1] === "view" && args.at(-1).includes("mergedAt")
+        ? JSON.stringify({ state: "MERGED", mergedAt: "2026-01-01T00:00:00Z", mergeCommit: { oid: "abc" }, url: "https://example.test/pr/7" })
+        : args[1] === "view"
+          ? JSON.stringify({ state: "OPEN", isDraft: false, mergeable: "MERGEABLE", reviewDecision: "APPROVED", statusCheckRollup: [{ name: "qa", status: "COMPLETED", conclusion: "SUCCESS" }] })
+          : "merged";
       return { content: [{ type: "text", text: `exit 0\n${output}` }], details: { code: 0 } };
     };
     const tools = createGitTools({ allowPrMerge: true, runGitHub });
@@ -74,7 +76,35 @@ test("GitHub merge uses deterministic gh preflight and requires successful open 
     assert.match(text(result), /merged/);
     assert.deepEqual(calls[0].slice(0, 3), ["pr", "view", "7"]);
     assert.deepEqual(calls[1], ["pr", "merge", "7", "--merge"]);
+    assert.deepEqual(calls[2].slice(0, 3), ["pr", "view", "7"]);
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("GitHub PR creation requires the current clean fully pushed feature branch", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "sandora-pr-create-"));
+  const remote = `${root}-remote.git`;
+  const calls = [];
+  try {
+    await git(root, "init", "-q", "-b", "feat/pr-ready");
+    await git(root, "config", "user.email", "test@sandora.local");
+    await git(root, "config", "user.name", "Sandora Test");
+    await writeFile(resolve(root, "README.md"), "ready\n");
+    await git(root, "add", "README.md");
+    await git(root, "commit", "-qm", "ready");
+    await execFile("git", ["init", "--bare", "-q", remote]);
+    await git(root, "remote", "add", "origin", remote);
+    await git(root, "push", "-u", "origin", "feat/pr-ready");
+    await writeFile(resolve(root, "unrelated.txt"), "allowed untracked\n");
+    const tools = createGitTools({ runGitHub: async args => { calls.push(args); return { content: [{ type: "text", text: "exit 0\nhttps://example.test/pr/1" }], details: { code: 0 } }; } });
+    await execute(tools, "github_pr_create", { head: "feat/pr-ready", base: "main", title: "Ready", body: "Verified" }, root);
+    assert.equal(calls.length, 1);
+    await writeFile(resolve(root, "README.md"), "dirty\n");
+    await assert.rejects(() => execute(tools, "github_pr_create", { head: "feat/pr-ready", title: "No", body: "No" }, root), /tracked working-tree changes/);
+    assert.equal(calls.length, 1);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(remote, { recursive: true, force: true });
   }
 });

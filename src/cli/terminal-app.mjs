@@ -170,6 +170,8 @@ const systemPrompt = [
 const session = await createSandoraSession({ cwd, customTools: [...createCodingTools(), ...createGitTools(), ...browserTools], systemPrompt });
 
 let state = createInitialState();
+let shutdownAfterRun = false;
+let streamCommandBuffer = "";
 let previousFrame = [];
 let previousSize = "";
 let activityTimer;
@@ -385,8 +387,12 @@ function render() {
 }
 
 function submit(text) {
-  if (!text || state.streaming) return;
-  if (text === "/quit" || text === "/exit") return shutdown();
+  if (!text) return;
+  if (text === "/quit" || text === "/exit") {
+    if (state.streaming) { shutdownAfterRun = true; requestAbort(); return; }
+    return shutdown();
+  }
+  if (state.streaming) return;
   const displayText = text;
   if (text === "/tools") {
     state.messages.push({ role: "assistant", text: "Available capabilities\n• Read and search repository files\n• Create, edit, and delete files\n• Run bounded shell commands, builds, and tests\n• Inspect failures and repair them\n• Inspect Git status, diff, history, branches, commits, pushes, and pull requests\n• Delegate up to four independent read-only subagents in parallel\n• Run explicitly named writable workers in isolated recoverable Git worktrees\n• Use structured browser automation when a Chromium/CDP backend is available\n\nMerge capabilities require explicit runtime authority. Direct desktop computer use fails closed until a supported adapter is configured." });
@@ -453,10 +459,15 @@ function submit(text) {
     stopActivityTicker();
     state = cleanupOutput(state);
     render();
+    if (shutdownAfterRun) shutdown();
   });
 }
 
-session.subscribe((event) => dispatch(event));
+const runScopedEvents = new Set(["agent.start", "agent.end", "message.start", "message.end", "text.delta", "thinking.delta", "tool.start", "tool.update", "tool.end", "turn.start", "turn.end", "retry.start", "retry.end"]);
+session.subscribe((event) => {
+  if (!state.streaming && runScopedEvents.has(event?.type)) return;
+  dispatch(event);
+});
 
 function shutdown() {
   process.stdin.setRawMode?.(false);
@@ -495,6 +506,18 @@ function handleInput(data) {
     if (state.streaming) {
       requestAbort();
     } else shutdown();
+    return;
+  }
+  if (state.streaming && !data.startsWith("\x1b")) {
+    if (data === "\r" || data === "\n") {
+      const command = streamCommandBuffer;
+      streamCommandBuffer = "";
+      if (command === "/quit" || command === "/exit") submit(command);
+      return;
+    }
+    const clean = data.replace(/[^A-Za-z/]/g, "").toLowerCase();
+    const candidate = `${streamCommandBuffer}${clean}`;
+    streamCommandBuffer = ["/quit", "/exit"].some(command => command.startsWith(candidate)) ? candidate : "";
     return;
   }
   if (data === "\u000c") {
