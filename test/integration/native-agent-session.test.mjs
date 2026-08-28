@@ -39,12 +39,14 @@ test("native session streams, executes tools, persists, and resumes", async () =
     assert.deepEqual(persisted.map(message => message.role), ["user", "assistant", "tool", "assistant"]);
     const durable = await new JsonlSessionStore(sessionPath).replay();
     assert.deepEqual(durable.map(event => event.sequence), durable.map((_event, index) => index + 1));
-    for (const type of ["session.created", "turn.requested", "turn.started", "model.request.requested", "model.request.started", "model.request.completed", "assistant.message.started", "assistant.delta", "tool.call.requested", "tool.call.started", "tool.call.completed", "turn.completed"]) {
+    for (const type of ["session.created", "turn.requested", "turn.started", "model.request.requested", "model.request.started", "model.request.completed", "assistant.message.started", "assistant.delta", "tool.call.requested", "policy.decision", "tool.call.approved", "tool.call.started", "tool.call.completed", "turn.completed"]) {
       assert.ok(durable.some(event => event.type === type), `missing durable ${type}`);
     }
     assert.equal(durable.filter(event => event.type === "model.request.requested").length, 2);
     assert.equal(durable.filter(event => event.type === "model.request.completed").length, 2);
     assert.ok(durable.findIndex(event => event.type === "tool.call.requested") < durable.findIndex(event => event.type === "tool.call.started"));
+    assert.ok(durable.findIndex(event => event.type === "policy.decision") < durable.findIndex(event => event.type === "tool.call.started"));
+    assert.ok(durable.findIndex(event => event.type === "tool.call.approved") < durable.findIndex(event => event.type === "tool.call.started"));
     for (const event of durable.filter(event => /^(model\.request|model\.usage)/.test(event.type))) assert.equal(event.correlationId, event.payload.requestId);
     for (const event of durable.filter(event => /^assistant\./.test(event.type))) assert.equal(event.correlationId, event.payload.assistantMessageId);
     for (const event of durable.filter(event => /^tool\.call/.test(event.type))) assert.equal(event.correlationId, event.payload.toolCallId);
@@ -61,6 +63,42 @@ test("native session streams, executes tools, persists, and resumes", async () =
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("native schema denial is durable and prevents receipt claims and effects", async () => {
+  const root = await mkdtemp(join(tmpdir(), "sandora-native-schema-denial-")); let effects = 0;
+  const registry = new NativeToolRegistry();
+  registry.register(defineTool({ name: "typed", parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"], additionalProperties: false }, execute: async () => { effects += 1; return "unexpected"; } }));
+  const provider = { model: "fixture", async *stream() { yield { type: "tool_call_delta", index: 0, id: "invalid-call", name: "typed", arguments: "{\"path\":7,\"extra\":true}" }; } };
+  try {
+    const session = await createAgentSession({ cwd: root, provider, registry });
+    await assert.rejects(session.prompt("invalid tool"), /Invalid arguments/);
+    assert.equal(effects, 0);
+    const durable = await new JsonlSessionStore(join(root, ".sandora", "session.jsonl")).replay();
+    const policy = durable.find(event => event.type === "policy.decision" && event.payload.toolCallId === "invalid-call");
+    assert.equal(policy.payload.decision, "DENY"); assert.equal(policy.payload.reason, "INVALID_ARGUMENTS");
+    assert.match(policy.payload.inputSha256, /^[a-f0-9]{64}$/);
+    assert.ok(durable.some(event => event.type === "tool.call.denied" && event.payload.toolCallId === "invalid-call"));
+    assert.equal(durable.some(event => event.type === "tool.call.started" && event.payload.toolCallId === "invalid-call"), false);
+    session.dispose();
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("native approval denial is terminal before tool execution", async () => {
+  const root = await mkdtemp(join(tmpdir(), "sandora-native-approval-denial-")); let effects = 0;
+  const previous = process.env.SANDORA_REQUIRE_APPROVALS; process.env.SANDORA_REQUIRE_APPROVALS = "1";
+  const registry = new NativeToolRegistry(); registry.register(defineTool({ name: "git_merge", parameters: { type: "object", properties: {}, additionalProperties: false }, execute: async () => { effects += 1; } }));
+  const provider = { model: "fixture", async *stream() { yield { type: "tool_call_delta", index: 0, id: "denied-call", name: "git_merge", arguments: "{}" }; } };
+  try {
+    const session = await createAgentSession({ cwd: root, provider, registry });
+    await assert.rejects(session.prompt("denied tool"), /approval missing/i);
+    assert.equal(effects, 0);
+    const durable = await new JsonlSessionStore(join(root, ".sandora", "session.jsonl")).replay();
+    assert.ok(durable.some(event => event.type === "policy.decision" && event.payload.toolCallId === "denied-call" && event.payload.decision === "DENY" && event.payload.stage === "APPROVAL_GATE"));
+    assert.ok(durable.some(event => event.type === "tool.call.denied" && event.payload.toolCallId === "denied-call"));
+    assert.equal(durable.some(event => event.type === "tool.call.started" && event.payload.toolCallId === "denied-call"), false);
+    session.dispose();
+  } finally { if (previous === undefined) delete process.env.SANDORA_REQUIRE_APPROVALS; else process.env.SANDORA_REQUIRE_APPROVALS = previous; await rm(root, { recursive: true, force: true }); }
 });
 
 test("native restart rejects model or system-prompt identity drift", async () => {

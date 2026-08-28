@@ -84,4 +84,4 @@ export class ApprovalStore {
   }
 }
 
-export function approvalScope({ toolName, args, authorityVariable }) { return { toolName, inputSha256: canonicalInputSha256(args || {}), authorityVariable }; }
+export function approvalScope({ toolName, args, authorityVariable }) { return { toolName, inputSha256: canonicalInputSha256(args === undefined ? {} : args), authorityVariable }; }

@@ -1,11 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { EventBus, JsonlSessionStore, OpenAICompatibleProvider, runTurn } from "./turn-runtime.mjs";
-import { NativeToolRegistry, openAiTools, toolText } from "../tools/registry.mjs";
+import { NativeToolRegistry, openAiTools, toolText, validateToolArgs } from "../tools/registry.mjs";
 import { createDelegateSubagentsTool } from "../agents/subagents.mjs";
 import { assertAgentSession, normalizeDisplayMessages } from "./agent-session.mjs";
 import { compactContext, measureContext, validateCompactionProvenance } from "./context-budget.mjs";
-import { ToolReceiptStore } from "../tools/receipts.mjs";
+import { canonicalInputSha256, ToolReceiptStore } from "../tools/receipts.mjs";
 import { boundedAuditValue } from "./events.mjs";
 
 class OfflineProvider {
@@ -187,17 +187,34 @@ export async function createAgentSession({
           onPartial: (message, metadata) => { const originalBytes = Buffer.byteLength(message.content); const content = boundedAuditValue(message.content, 20_000); return store.append({ type: "assistant.message.interrupted", correlationId: metadata.assistantMessageId, sessionId, turnId, requestId: metadata.requestId, assistantMessageId: metadata.assistantMessageId, status: "INTERRUPTED", content, contentBytes: Buffer.byteLength(content), truncated: originalBytes > Buffer.byteLength(content) }); },
           executeTool: async (name, args, context) => {
             const toolExecutionId = randomUUID();
-            await store.append({ type: "tool.call.started", correlationId: context.toolCallId, sessionId, turnId, toolCallId: context.toolCallId, toolExecutionId, name, step: context.step });
-            bus.emit("tool_start", { name, args });
+            const tool = registry.get(name);
+            const input = args === undefined ? {} : args;
+            try { validateToolArgs(tool, input); }
+            catch (error) {
+              const inputSha256 = canonicalInputSha256(input);
+              await store.append({ type: "policy.decision", correlationId: context.toolCallId, sessionId, turnId, toolCallId: context.toolCallId, name, inputSha256, stage: "SCHEMA_VALIDATION", decision: "DENY", reason: tool ? "INVALID_ARGUMENTS" : "UNKNOWN_TOOL" });
+              await store.append({ type: "tool.call.denied", correlationId: context.toolCallId, sessionId, turnId, toolCallId: context.toolCallId, name, inputSha256, reason: tool ? "INVALID_ARGUMENTS" : "UNKNOWN_TOOL" });
+              throw error;
+            }
+            let allowed; let executionStarted = false;
             try {
-              const result = await receipts.execute({ toolCallId: context.toolCallId, toolName: name, args, invoke: () => registry.execute(name, args, { ...context, cwd }) });
+              const result = await receipts.execute({
+                toolCallId: context.toolCallId, toolName: name, args: input, signal: context.signal,
+                onPolicyDecision: async authorization => {
+                  allowed = authorization.approval.status === "NOT_REQUIRED" || authorization.approval.status === "APPROVED";
+                  await store.append({ type: "policy.decision", correlationId: context.toolCallId, sessionId, turnId, toolCallId: context.toolCallId, name, inputSha256: authorization.inputSha256, stage: "APPROVAL_GATE", decision: allowed ? "ALLOW" : "DENY", approvalStatus: authorization.approval.status, approvalReference: authorization.approval.reference, authority: authorization.authority.variable, authorityGranted: authorization.authority.granted });
+                  await store.append({ type: allowed ? "tool.call.approved" : "tool.call.denied", correlationId: context.toolCallId, sessionId, turnId, toolCallId: context.toolCallId, name, inputSha256: authorization.inputSha256, approvalStatus: authorization.approval.status, approvalReference: authorization.approval.reference });
+                },
+                onBeforeInvoke: async () => { await store.append({ type: "tool.call.started", correlationId: context.toolCallId, sessionId, turnId, toolCallId: context.toolCallId, toolExecutionId, name, step: context.step }); executionStarted = true; bus.emit("tool_start", { name, args: input }); },
+                invoke: () => registry.execute(name, input, { ...context, cwd }),
+              });
               const output = boundedAuditValue(toolText(result), 20_000);
               await store.append({ type: "tool.call.completed", correlationId: context.toolCallId, sessionId, turnId, toolCallId: context.toolCallId, toolExecutionId, name, outputBytes: Buffer.byteLength(output) });
               return output;
             } catch (error) {
-              await store.append({ type: context.signal?.aborted ? "tool.call.cancelled" : "tool.call.failed", correlationId: context.toolCallId, sessionId, turnId, toolCallId: context.toolCallId, toolExecutionId, name, error: boundedAuditValue(error instanceof Error ? error.message : String(error), 4_000) });
+              if (allowed !== false) await store.append({ type: context.signal?.aborted ? "tool.call.cancelled" : "tool.call.failed", correlationId: context.toolCallId, sessionId, turnId, toolCallId: context.toolCallId, toolExecutionId, name, started: executionStarted, error: boundedAuditValue(error instanceof Error ? error.message : String(error), 4_000) });
               throw error;
-            } finally { bus.emit("tool_end", { name }); }
+            } finally { if (executionStarted) bus.emit("tool_end", { name }); }
           },
         });
         active.terminalizing = true;

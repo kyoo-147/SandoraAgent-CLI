@@ -109,3 +109,41 @@ test("browser transfer receipts bind upload and retained-download authority", as
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("registered tool schemas fail closed before receipt claims or effects", async () => {
+  const root = await rootFixture(); let calls = 0;
+  try {
+    const [tool] = wrapToolsWithReceipts([{ name: "typed", parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"], additionalProperties: false }, execute: async () => { calls += 1; } }], { cwd: root, sessionId: "schema", runtime: "pi" });
+    await assert.rejects(() => tool.execute("bad", { path: 7, extra: true }), /Invalid arguments/);
+    assert.equal(calls, 0);
+    await assert.rejects(() => readdir(join(root, ".sandora")), { code: "ENOENT" });
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("schema validation supports bounded TypeBox anyOf unions and rejects null", async () => {
+  const root = await rootFixture(); let calls = 0;
+  try {
+    const [tool] = wrapToolsWithReceipts([{ name: "union", parameters: { type: "object", properties: { mode: { anyOf: [{ const: "a", type: "string" }, { const: "b", type: "string" }] } }, required: ["mode"], additionalProperties: false }, execute: async () => { calls += 1; return "ok"; } }], { cwd: root, sessionId: "schema-union", runtime: "pi" });
+    assert.equal(await tool.execute("good", { mode: "b" }), "ok");
+    await assert.rejects(() => tool.execute("null", null), /Invalid arguments/);
+    assert.equal(calls, 1);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("aborted tool execution seals a replay-readable cancelled receipt", async () => {
+  const root = await rootFixture(); const controller = new AbortController(); controller.abort(new Error("stop"));
+  const options = { cwd: root, sessionId: "cancelled", runtime: "native" };
+  try {
+    const execute = () => new ToolReceiptStore(options).execute({ toolCallId: "call", toolName: "typed", args: {}, signal: controller.signal, invoke: async () => { throw controller.signal.reason; } });
+    await assert.rejects(execute, /stop/);
+    const directory = join(root, ".sandora", "receipts", "cancelled");
+    const terminalName = (await readdir(directory)).find(name => name.endsWith(".terminal.json"));
+    const terminal = JSON.parse(await readFile(join(directory, terminalName), "utf8"));
+    assert.equal(terminal.state, "CANCELLED"); assert.equal(terminal.outcome, "CANCELLED");
+    await assert.rejects(execute, /DUPLICATE/);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("unsupported tool schema constructs are rejected before advertisement", () => {
+  assert.throws(() => wrapToolsWithReceipts([{ name: "unsupported", parameters: { type: "object", oneOf: [{ type: "object" }] }, execute: async () => {} }], { cwd: ".", sessionId: "unsupported", runtime: "native" }), /Unsupported tool schema/);
+});

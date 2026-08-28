@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, open, readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { ApprovalStore } from "./approvals.mjs";
-import { defineTool, toolText } from "./registry.mjs";
+import { defineTool, toolText, validateToolArgs } from "./registry.mjs";
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
@@ -69,7 +69,7 @@ function validateTerminal(record, expected, started) {
   const success = record?.state === "SUCCEEDED";
   const suffix = success ? ["resultSha256", "resultBytes"] : ["errorCode", "errorSha256"];
   const keys = [...Object.keys(expected), "state", "outcome", "startedAt", "priorRecordSha256", "terminalAt", ...suffix, "recordSha256"];
-  const validResult = success ? record.outcome === "SUCCEEDED" && /^[a-f0-9]{64}$/.test(record.resultSha256) && Number.isSafeInteger(record.resultBytes) && record.resultBytes >= 0 : record?.state === "FAILED" && ["FAILED", "BLOCKED"].includes(record.outcome) && /^[a-f0-9]{64}$/.test(record.errorSha256) && (record.errorCode === null || typeof record.errorCode === "string");
+  const validResult = success ? record.outcome === "SUCCEEDED" && /^[a-f0-9]{64}$/.test(record.resultSha256) && Number.isSafeInteger(record.resultBytes) && record.resultBytes >= 0 : ["FAILED", "CANCELLED"].includes(record?.state) && ({ FAILED: ["FAILED", "BLOCKED"], CANCELLED: ["CANCELLED"] })[record.state].includes(record.outcome) && /^[a-f0-9]{64}$/.test(record.errorSha256) && (record.errorCode === null || typeof record.errorCode === "string");
   if (!exactKeys(record, keys) || !validSeal(record) || !validResult || !Number.isFinite(Date.parse(record.terminalAt)) || record.startedAt !== started.startedAt || record.priorRecordSha256 !== started.recordSha256) throw new Error("TOOL_RECEIPT_UNKNOWN: terminal receipt schema, seal, or STARTED binding is invalid");
   validateCommon(record, expected);
   for (const key of Object.keys(expected)) if (canonical(record[key]) !== canonical(started[key])) throw new Error("TOOL_RECEIPT_UNKNOWN: terminal receipt fields conflict with STARTED policy");
@@ -86,9 +86,9 @@ export class ToolReceiptStore {
     this.approvals = new ApprovalStore({ cwd });
   }
 
-  async execute({ toolCallId, toolName, args, invoke }) {
+  async execute({ toolCallId, toolName, args, signal, invoke, onPolicyDecision, onBeforeInvoke }) {
     if (typeof toolCallId !== "string" || !toolCallId) throw new Error("Tool call identity is required for receipt execution");
-    const inputSha256 = canonicalInputSha256(args || {});
+    const inputSha256 = canonicalInputSha256(args === undefined ? {} : args);
     const idempotencyKey = `${this.sessionId}:${toolCallId}`;
     const receiptId = createHash("sha256").update(`${idempotencyKey}:${toolName}:${inputSha256}`).digest("hex");
     const basePath = join(this.directory, createHash("sha256").update(idempotencyKey).digest("hex"));
@@ -117,6 +117,7 @@ export class ToolReceiptStore {
       throw new Error("TOOL_RECEIPT_DUPLICATE: terminal execution already exists; automatic replay is blocked");
     }
     const approval = await this.approvals.consume({ toolName, inputSha256, authorityVariable: authority.variable });
+    await onPolicyDecision?.({ inputSha256, authority, approval });
     const common = { ...identity, approval, authority, preflight: "DELEGATED_TO_TOOL", enforcement: "APPLICATION_POLICY", sandbox: "UNAVAILABLE_APPLICATION_ONLY", durability: "FILE_FSYNC" };
     const started = sealRecord({ ...common, state: "STARTED", outcome: "PENDING", startedAt: new Date().toISOString() });
     try { await durableWriteExclusive(startedPath, started); }
@@ -135,11 +136,12 @@ export class ToolReceiptStore {
       try { const { recordSha256: priorRecordSha256, ...startedFields } = started; await durableWriteExclusive(terminalPath, sealRecord({ ...startedFields, priorRecordSha256, state: "FAILED", outcome: "BLOCKED", terminalAt: new Date().toISOString(), errorCode: error.code, errorSha256: createHash("sha256").update(error.message).digest("hex") })); } catch (receiptError) { throw new AggregateError([error, receiptError], "Approval blocked and terminal receipt persistence failed"); }
       throw error;
     }
-    try { result = await invoke(); }
+    try { await onBeforeInvoke?.({ inputSha256, authority, approval }); result = await invoke(); }
     catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const blocked = /blocked|refus|requires|disabled|authority|policy|not available/i.test(message);
-      try { const { recordSha256: priorRecordSha256, ...startedFields } = started; await durableWriteExclusive(terminalPath, sealRecord({ ...startedFields, priorRecordSha256, state: "FAILED", outcome: blocked ? "BLOCKED" : "FAILED", terminalAt: new Date().toISOString(), errorCode: error?.code || null, errorSha256: createHash("sha256").update(message).digest("hex") })); }
+      const cancelled = signal?.aborted === true;
+      try { const { recordSha256: priorRecordSha256, ...startedFields } = started; await durableWriteExclusive(terminalPath, sealRecord({ ...startedFields, priorRecordSha256, state: cancelled ? "CANCELLED" : "FAILED", outcome: cancelled ? "CANCELLED" : blocked ? "BLOCKED" : "FAILED", terminalAt: new Date().toISOString(), errorCode: error?.code || null, errorSha256: createHash("sha256").update(message).digest("hex") })); }
       catch (receiptError) { throw new AggregateError([error, receiptError], "Tool failed and terminal receipt persistence failed"); }
       throw error;
     }
@@ -153,5 +155,5 @@ export class ToolReceiptStore {
 
 export function wrapToolsWithReceipts(tools, options) {
   const receipts = new ToolReceiptStore(options);
-  return tools.map(tool => defineTool({ ...tool, execute: (toolCallId, args, signal, update, context) => receipts.execute({ toolCallId, toolName: tool.name, args, invoke: () => tool.execute(toolCallId, args, signal, update, context) }) }));
+  return tools.map(tool => defineTool({ ...tool, execute: async (toolCallId, args, signal, update, context) => { const input = args === undefined ? {} : args; validateToolArgs(tool, input); return receipts.execute({ toolCallId, toolName: tool.name, args: input, signal, invoke: () => tool.execute(toolCallId, input, signal, update, context) }); } }));
 }
