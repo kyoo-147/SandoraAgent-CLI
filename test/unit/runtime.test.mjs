@@ -82,7 +82,7 @@ test("JSONL sessions append, replay, and resume without rewriting history", asyn
     const after = await readFile(path, "utf8");
     assert.equal(after.split("\n").filter(Boolean).length, 3);
     assert.ok(after.startsWith(before));
-    assert.equal((await store.replay()).at(-1).value, 3);
+    assert.equal((await store.replay()).at(-1).payload.value, 3);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
@@ -138,7 +138,7 @@ test("JSONL store serializes concurrent append sequence numbers", async () => {
     await Promise.all(Array.from({ length: 20 }, (_value, index) => store.append({ type: "event", index })));
     const events = await store.replay();
     assert.deepEqual(events.map(event => event.sequence), Array.from({ length: 20 }, (_value, index) => index + 1));
-    assert.equal(new Set(events.map(event => event.index)).size, 20);
+    assert.equal(new Set(events.map(event => event.payload.index)).size, 20);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -156,7 +156,7 @@ test("JSONL append quarantines a malformed crash tail before resuming", async ()
     assert.equal(appended.sequence, 2);
     assert.equal(store.lastRecovery.type, "quarantined-malformed-tail");
     assert.equal(await readFile(store.lastRecovery.quarantinePath, "utf8"), malformed);
-    assert.deepEqual((await store.replay()).map(event => event.type), ["message", "event"]);
+    assert.deepEqual((await store.replay()).map(event => event.type), ["user.message.accepted", "runtime.unknown"]);
     assert.equal((await readdir(dir)).filter(name => name.endsWith(".crash-tail")).length, 1);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });

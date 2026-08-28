@@ -38,7 +38,7 @@ test("native session streams, executes tools, persists, and resumes", async () =
     assert.deepEqual(persisted.map(message => message.role), ["user", "assistant", "tool", "assistant"]);
     const durable = await new JsonlSessionStore(sessionPath).replay();
     assert.deepEqual(durable.map(event => event.sequence), durable.map((_event, index) => index + 1));
-    for (const type of ["session.started", "turn.started", "model.started", "tool.started", "tool.completed", "turn.completed"]) {
+    for (const type of ["session.created", "turn.requested", "turn.started", "model.request.started", "tool.call.started", "tool.call.completed", "turn.completed"]) {
       assert.ok(durable.some(event => event.type === type), `missing durable ${type}`);
     }
     const resumedProvider = { model: "fixture", async *stream({ messages }) {
@@ -54,6 +54,16 @@ test("native session streams, executes tools, persists, and resumes", async () =
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("native restart rejects model or system-prompt identity drift", async () => {
+  const root = await mkdtemp(join(tmpdir(), "sandora-native-identity-")); const sessionPath = join(root, "session.jsonl");
+  const provider = model => ({ model, async *stream() { yield { type: "text_delta", delta: "unused" }; } });
+  try {
+    const initial = await createAgentSession({ cwd: root, sessionPath, provider: provider("model-a"), registry: new NativeToolRegistry(), systemPrompt: "SYSTEM-A" }); initial.dispose();
+    await assert.rejects(() => createAgentSession({ cwd: root, sessionPath, provider: provider("model-b"), registry: new NativeToolRegistry(), systemPrompt: "SYSTEM-A" }), /identity does not match/);
+    await assert.rejects(() => createAgentSession({ cwd: root, sessionPath, provider: provider("model-a"), registry: new NativeToolRegistry(), systemPrompt: "SYSTEM-B" }), /identity does not match/);
+  } finally { await rm(root, { recursive: true, force: true }); }
 });
 
 test("native session retains completed tool turns across provider failure and restart", async () => {
@@ -79,8 +89,8 @@ test("native session retains completed tool turns across provider failure and re
     assert.deepEqual(persisted.map(message => message.role), ["user", "assistant", "tool"]);
     assert.equal(persisted[1].tool_calls[0].function.name, "mutate");
     assert.equal(persisted[2].content, "mutation complete");
-    const interrupted = (await new JsonlSessionStore(sessionPath).replay()).find(event => event.type === "assistant.partial");
-    assert.deepEqual({ status: interrupted.status, content: interrupted.content, truncated: interrupted.truncated }, { status: "INTERRUPTED", content: "partial answer", truncated: false });
+    const interrupted = (await new JsonlSessionStore(sessionPath).replay()).find(event => event.type === "assistant.message.interrupted");
+    assert.deepEqual({ status: interrupted.payload.status, content: interrupted.payload.content, truncated: interrupted.payload.truncated }, { status: "INTERRUPTED", content: "partial answer", truncated: false });
     session.dispose();
 
     const restarted = await createAgentSession({ cwd: root, sessionPath, provider: { model: "fixture", async *stream({ messages }) {
@@ -138,7 +148,7 @@ test("native session aborts an active provider stream", async () => {
     await assert.rejects(pending, /aborted/i);
     const durable = await new JsonlSessionStore(join(root, ".sandora", "session.jsonl")).replay();
     assert.ok(durable.some(event => event.type === "turn.cancel.requested"));
-    assert.ok(durable.some(event => event.type === "turn.aborted"));
+    assert.ok(durable.some(event => event.type === "turn.cancelled"));
     session.dispose();
   } finally {
     await rm(root, { recursive: true, force: true });
