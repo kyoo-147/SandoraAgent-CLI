@@ -57,7 +57,7 @@ Credentials remain on the user's machine and are not stored in this repository.
 
 ### Local plugins
 
-Place explicitly trusted plugins under `.sandora/plugins/<id>` and enable them with a comma-separated `SANDORA_PLUGINS=id-one,id-two`. Sandora discovers one `sandora.plugin.json` (or `plugin.json`) per immediate child, validates API version 1 declarations, activates enabled plugins transactionally, injects declared tool contributions into both runtimes, and disposes active plugins with their session. Undeclared or colliding contributions fail closed.
+Place explicitly trusted plugins under `.sandora/plugins/<id>` and enable them with a comma-separated `SANDORA_PLUGINS=id-one,id-two`. Sandora discovers one `sandora.plugin.json` (or `plugin.json`) per immediate child, validates API version 1 declarations, activates enabled plugins transactionally, injects declared tool contributions into both runtimes, and disposes active plugins with their session. Undeclared or colliding contributions fail closed. A manifest may pin its entry file with `integrity: { "algorithm": "sha256", "digest": "…" }`; Sandora verifies that entry before import. This optional entry checksum does not cover transitive imports or turn trusted plugins into sandboxed code.
 
 The native runtime can select an enabled provider contribution with `SANDORA_PROVIDER_PLUGIN=<provider-name>`; provider factories must return Sandora's streaming provider contract. Pi providers continue to use Pi `ModelRuntime` and reject plugin-provider injection. Plugins execute as trusted local code with the user's permissions—they are an extension boundary, not a sandbox.
 

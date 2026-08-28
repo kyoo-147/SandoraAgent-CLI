@@ -1,4 +1,5 @@
 import { readdir, readFile, realpath } from "node:fs/promises";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { existsSync } from "node:fs";
 import { join, resolve, relative, sep } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -23,6 +24,7 @@ export function validateManifest(manifest) {
   if (!nonEmpty(manifest.version)) errors.push("version is required");
   if (manifest.api !== PLUGIN_API_VERSION) errors.push(`api must be ${PLUGIN_API_VERSION}`);
   if (!nonEmpty(manifest.entry)) errors.push("entry is required");
+  if (manifest.integrity !== undefined && (!manifest.integrity || manifest.integrity.algorithm !== "sha256" || !/^[a-f0-9]{64}$/.test(manifest.integrity.digest || ""))) errors.push("integrity must contain algorithm sha256 and a lowercase 64-character digest");
   if (manifest.contributes !== undefined) {
     if (!manifest.contributes || typeof manifest.contributes !== "object" || Array.isArray(manifest.contributes)) errors.push("contributes must be an object");
     else for (const [rawType, names] of Object.entries(manifest.contributes)) {
@@ -123,6 +125,11 @@ export class PluginHost {
       assertPluginEntry(plugin.directory, requestedEntry);
       const entry = await realpath(requestedEntry);
       assertPluginEntry(await realpath(plugin.directory), entry);
+      if (plugin.manifest.integrity) {
+        const actual = createHash("sha256").update(await readFile(entry)).digest();
+        const expected = Buffer.from(plugin.manifest.integrity.digest, "hex");
+        if (!timingSafeEqual(actual, expected)) throw new Error("plugin entry integrity mismatch");
+      }
       const module = await import(pathToFileURL(entry).href);
       if (typeof module.activate !== "function") throw new Error("entry must export activate(api)");
       const result = await module.activate(api);

@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -17,6 +18,7 @@ async function fixture(root, id, code, value = manifest(id)) {
 test("validates manifests and rejects malformed contracts", () => {
   assert.equal(validateManifest(manifest("demo")).valid, true);
   assert.equal(validateManifest({ id: "Bad ID", api: 2 }).valid, false);
+  assert.match(validateManifest({ ...manifest("demo"), integrity: { algorithm: "sha256", digest: "bad" } }).errors.join(" "), /integrity/);
   assert.match(validateManifest({ id: "demo", name: "x", version: "1", api: 1, entry: "x", contributes: { widgets: ["x"] } }).errors.join(" "), /unknown contribution/);
 });
 
@@ -62,6 +64,21 @@ test("rejects collisions and rolls back partial activation", async () => {
     assert.equal(host.list().find((x) => x.id === "two").state, "failed");
     assert.equal(host.contributions("tool").size, 1);
   } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("optional plugin entry integrity is verified before code executes", async () => {
+  const root = await mkdtemp(join(tmpdir(), "sandora-plugin-integrity-"));
+  try {
+    const code = "globalThis.__integrityPlugin = true; export function activate() {}\n";
+    const digest = createHash("sha256").update(code).digest("hex");
+    await fixture(root, "sealed", code, { ...manifest("sealed", "index.mjs", {}), integrity: { algorithm: "sha256", digest } });
+    await writeFile(join(root, "sealed", "index.mjs"), `${code}// tampered`);
+    const host = new PluginHost({ enabled: ["sealed"] });
+    await host.load(await discoverPlugins(root));
+    assert.equal(host.list()[0].state, "failed");
+    assert.match(host.list()[0].error, /integrity mismatch/);
+    assert.equal(globalThis.__integrityPlugin, undefined);
+  } finally { delete globalThis.__integrityPlugin; await rm(root, { recursive: true, force: true }); }
 });
 
 test("plugin entry cannot escape its plugin directory", async () => {
