@@ -42,6 +42,10 @@ export class GitWorktreeManager {
 
   pathFor(workerId) { return resolve(this.worktreeRoot, safeId(workerId)); }
   metadataPath(workerId) { return resolve(this.metadataRoot, `${safeId(workerId)}.json`); }
+  ownedIgnorePaths() {
+    const parent = dirname(this.worktreeRoot);
+    return parent === this.repoRoot ? [relative(this.repoRoot, this.worktreeRoot)] : [relative(this.repoRoot, parent)];
+  }
 
   async create(workerId, { baseRef = "HEAD", branch, owner = process.env.USERNAME || process.env.USER || "unknown" } = {}) {
     safeId(workerId);
@@ -53,7 +57,7 @@ export class GitWorktreeManager {
     safeRef(branchName, "worker branch");
     if (!branchName.startsWith("sandora/swarm/") || isProtectedBranch(branchName)) throw new Error("Worker branch must use the sandora/swarm namespace");
     await this.git(["check-ref-format", "--branch", branchName]);
-    const dirty = await this.dirtyState(this.repoRoot, { ignore: [relative(this.repoRoot, dirname(this.worktreeRoot))] });
+    const dirty = await this.dirtyState(this.repoRoot, { ignore: this.ownedIgnorePaths() });
     await mkdir(this.worktreeRoot, { recursive: true });
     await mkdir(this.metadataRoot, { recursive: true });
     try {
@@ -129,7 +133,7 @@ export class GitWorktreeManager {
     if (targetOid !== headOid) throw new GitWorktreeError("Integration targetRef does not match current HEAD");
     const conflict = await this.conflicts(workerId, targetOid);
     if (conflict.conflict) throw new GitWorktreeError(`Integration conflict for ${workerId}`, conflict);
-    const state = await this.dirtyState(this.repoRoot, { ignore: [relative(this.repoRoot, dirname(this.worktreeRoot))] });
+    const state = await this.dirtyState(this.repoRoot, { ignore: this.ownedIgnorePaths() });
     if (state.dirty) throw new GitWorktreeError("Refusing integration into a dirty target", { state });
     const recheckedHead = (await this.git(["rev-parse", "HEAD"])).stdout.trim();
     if (recheckedHead !== headOid) throw new GitWorktreeError("Integration target changed during validation");

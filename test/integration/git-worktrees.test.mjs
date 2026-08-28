@@ -37,6 +37,9 @@ test("GitWorktreeManager creates, validates, collects, integrates, and cleans a 
     assert.equal((await manager.conflicts("worker-1")).conflict, false);
     const order = GitWorktreeManager.integrationOrder([{ workerId: "worker-1" }, { workerId: "worker-2", dependsOn: ["worker-1"] }]);
     assert.deepEqual(order, ["worker-1", "worker-2"]);
+    await writeFile(resolve(root, "unrelated-dirty.txt"), "preserve\n");
+    await assert.rejects(() => manager.integrate("worker-1", { message: "must refuse dirty target" }), /dirty target/);
+    await rm(resolve(root, "unrelated-dirty.txt"));
     await manager.integrate("worker-1", { message: "integrate worker" });
     assert.match((await readFile(resolve(root, "worker.txt"), "utf8")), /worker output/);
     const cleanup = await manager.cleanup("worker-1");
