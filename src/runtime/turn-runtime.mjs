@@ -122,7 +122,7 @@ export async function runTurn({ provider, messages = [], tools = [], executeTool
       throwIfAborted(signal);
       let args;
       try { args = JSON.parse(call.arguments || "{}"); } catch { throw new Error(`Invalid arguments for tool ${call.name}`); }
-      const result = await executeTool(call.name, args, { signal, step });
+      const result = await executeTool(call.name, args, { signal, step, toolCallId: call.id });
       const content = typeof result === "string" ? result : JSON.stringify(result);
       messages.push({ role: "tool", tool_call_id: call.id, content });
       bus.emit("tool_result", { call, content, step });

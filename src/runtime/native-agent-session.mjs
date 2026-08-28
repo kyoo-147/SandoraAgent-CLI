@@ -4,6 +4,7 @@ import { EventBus, JsonlSessionStore, OpenAICompatibleProvider, runTurn } from "
 import { NativeToolRegistry, openAiTools, toolText } from "../tools/registry.mjs";
 import { createDelegateSubagentsTool } from "../agents/subagents.mjs";
 import { assertAgentSession, normalizeDisplayMessages } from "./agent-session.mjs";
+import { ToolReceiptStore } from "../tools/receipts.mjs";
 
 class OfflineProvider {
   constructor(model = "offline") { this.model = model; }
@@ -34,6 +35,7 @@ export async function createAgentSession({
   const resumed = events.filter(event => event.type === "message").map(event => event.message);
   const existingSession = events.find(event => event.type === "session.started");
   const sessionId = existingSession?.sessionId || randomUUID();
+  const receipts = new ToolReceiptStore({ cwd, sessionId, runtime: "native" });
   await store.append({ type: existingSession ? "session.resumed" : "session.started", sessionId, runtime: "sandora-native", model: provider.model || "custom" });
   const messages = [{ role: "system", content: systemPrompt }, ...resumed.filter(message => message?.role !== "system")];
   if (!registry.has("delegate_subagents")) registry.register(createDelegateSubagentsTool({ provider, cwd }));
@@ -82,7 +84,8 @@ export async function createAgentSession({
             await store.append({ type: "tool.started", sessionId, turnId, toolExecutionId, name, step: context.step });
             bus.emit("tool_start", { name, args });
             try {
-              const output = toolText(await registry.execute(name, args, { ...context, cwd }));
+              const result = await receipts.execute({ toolCallId: context.toolCallId, toolName: name, args, invoke: () => registry.execute(name, args, { ...context, cwd }) });
+              const output = toolText(result);
               await store.append({ type: "tool.completed", sessionId, turnId, toolExecutionId, name, outputBytes: Buffer.byteLength(output) });
               return output;
             } catch (error) {

@@ -5,6 +5,7 @@ import { createPiSubagentsTool } from "../agents/pi-subagents.mjs";
 import { createPiWritableWorkerTools } from "../agents/pi-writable-workers.mjs";
 import { assertAgentSession, normalizeDisplayMessages } from "./agent-session.mjs";
 import { defineTool } from "../tools/registry.mjs";
+import { wrapToolsWithReceipts } from "../tools/receipts.mjs";
 
 export async function createPiAgentSession({
   cwd = process.cwd(),
@@ -34,15 +35,17 @@ export async function createPiAgentSession({
     if (names.has(tool.name)) throw new Error(`Duplicate Pi tool name: ${tool.name}`);
     names.add(tool.name);
   }
+  const sessionManager = SessionManager.continueRecent(cwd, join(cwd, ".sandora", "pi-sessions"));
+  const receiptTools = wrapToolsWithReceipts(allCustomTools, { cwd, sessionId: sessionManager.getSessionId(), runtime: "pi" });
   const { session } = await createAgentSession({
     cwd,
     agentDir,
     modelRuntime,
     resourceLoader: loader,
     noTools: "builtin",
-    tools: allCustomTools.map(tool => tool.name),
-    customTools: allCustomTools,
-    sessionManager: SessionManager.continueRecent(cwd, join(cwd, ".sandora", "pi-sessions")),
+    tools: receiptTools.map(tool => tool.name),
+    customTools: receiptTools,
+    sessionManager,
   });
 
   return assertAgentSession({

@@ -25,10 +25,10 @@ export class NativeToolRegistry {
   has(name) { return this.#tools.has(name); }
   get(name) { return this.#tools.get(name); }
   list() { return [...this.#tools.values()]; }
-  async execute(name, args, { signal, cwd } = {}) {
+  async execute(name, args, { signal, cwd, toolCallId } = {}) {
     const tool = this.get(name);
     if (!tool) throw new Error(`Unknown tool: ${name}`);
-    return tool.execute(`native-${Date.now()}`, args || {}, signal, undefined, { cwd });
+    return tool.execute(toolCallId || `native-${Date.now()}`, args || {}, signal, undefined, { cwd });
   }
 }
 

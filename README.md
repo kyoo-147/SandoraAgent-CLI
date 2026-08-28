@@ -104,6 +104,8 @@ Sandora is designed to work autonomously inside the selected workspace. Workspac
 
 Package installation/execution commands such as `npm exec`, `pnpm dlx`, and package mutation are unavailable. Running repository-defined package scripts (`npm test`, `npm run …`, and equivalents) requires explicit `SANDORA_ALLOW_PACKAGE_SCRIPTS=1` authority because package manifests regain arbitrary project-code execution.
 
+Sandora writes provider-neutral tool-control receipts under `.sandora/receipts/<session-id>.jsonl`. Receipts preserve call identity, canonical input hashes, authority/enforcement status, bounded result or error hashes, and terminal outcome without persisting raw arguments or outputs. Duplicate, colliding, or ambiguous previously-started call identities fail closed rather than automatically replaying possible side effects. These are application-level audit receipts, not OS-sandbox or exactly-once external-side-effect proof.
+
 Local merge and pull-request merge capabilities are disabled by default. Grant them explicitly with `SANDORA_ALLOW_LOCAL_MERGE=1` or `SANDORA_ALLOW_PR_MERGE=1`. PR merge also requires a non-draft mergeable PR with successful checks; allowing a PR with no checks additionally requires `SANDORA_ALLOW_UNCHECKED_PR_MERGE=1`.
 
 Browser navigation pins the requested origin and refuses cross-origin redirects, links, observations, and tab switches by default. Grant an intentional cross-origin transition with `SANDORA_ALLOW_BROWSER_CROSS_ORIGIN=1`; consequential submit/send/delete/pay actions separately require `SANDORA_ALLOW_BROWSER_SUBMIT=1`.
