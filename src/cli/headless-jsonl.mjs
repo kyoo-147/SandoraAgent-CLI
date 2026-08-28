@@ -106,6 +106,7 @@ async function handleMessage(message) {
     await session.abort();
     return respond(id, true, { status: "abort_requested", activeRequestId: active.id });
   }
+  if (message.type === "history") return respond(id, true, { messages: session.getDisplayMessages?.() || [] });
   if (message.type === "status") return respond(id, true, { runtime: session.runtime, sessionId: session.sessionId, model: session.model?.id || null, thinkingLevel: session.thinkingLevel || null, activeRequestId: active?.id || null, contextUsage: session.getContextUsage?.() || null });
   if (message.type === "shutdown") {
     shuttingDown = true;

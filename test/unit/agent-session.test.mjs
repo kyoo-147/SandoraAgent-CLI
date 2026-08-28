@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { withRunLifecycle } from "../../src/runtime/agent-session.mjs";
+import { normalizeDisplayMessages, withRunLifecycle } from "../../src/runtime/agent-session.mjs";
 
 function fakeSession(prompt) {
   const listeners = new Set();
@@ -48,4 +48,14 @@ test("shared lifecycle emits exactly one error or abort terminal", async () => {
   await aborted.abort();
   await assert.rejects(() => pending, /cancelled/);
   assert.deepEqual(abortEvents, [{ type: "run.start" }, { type: "run.abort" }]);
+});
+
+test("display history keeps only bounded user and assistant text", () => {
+  assert.deepEqual(normalizeDisplayMessages([
+    { role: "system", content: "hidden" },
+    { role: "user", content: [{ type: "text", text: "hello" }, { type: "image", data: "hidden" }] },
+    { role: "assistant", content: [{ type: "thinking", thinking: "private" }, { type: "text", text: "answer" }, { type: "toolCall", name: "secret" }] },
+    { role: "tool", content: "tool output" },
+  ]), [{ role: "user", text: "hello" }, { role: "assistant", text: "answer" }]);
+  assert.deepEqual(normalizeDisplayMessages([{ role: "user", content: "🙂🙂🙂" }], { maxMessages: 1, maxTextBytes: 8 }), [{ role: "user", text: "🙂🙂" }]);
 });

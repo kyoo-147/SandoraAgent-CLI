@@ -170,6 +170,7 @@ const systemPrompt = [
 const session = await createSandoraSession({ cwd, customTools: [...createCodingTools(), ...createGitTools(), ...browserTools], systemPrompt });
 
 let state = createInitialState();
+state.messages = session.getDisplayMessages?.() || [];
 let shutdownAfterRun = false;
 let streamCommandBuffer = "";
 let previousFrame = [];

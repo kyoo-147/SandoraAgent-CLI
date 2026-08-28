@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { request } from "node:http";
-import { mkdir, mkdtemp, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, open, realpath, rm, stat } from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { Type } from "typebox";
@@ -27,17 +28,40 @@ export async function resolveBrowserArtifactPath(cwd, value) {
   } catch (error) {
     if (error.code !== "ENOENT") throw error;
   }
-  let parent = dirname(candidate);
-  while (true) {
-    try { parent = await realpath(parent); break; }
-    catch (error) {
-      if (error.code !== "ENOENT" || parent === root) throw error;
-      parent = dirname(parent);
-    }
+  const parentRelative = relative(root, dirname(candidate));
+  let parent = root;
+  for (const component of parentRelative.split(sep).filter(Boolean)) {
+    parent = join(parent, component);
+    let info;
+    try { info = await lstat(parent); }
+    catch (error) { if (error.code !== "ENOENT") throw error; await mkdir(parent); info = await lstat(parent); }
+    if (info.isSymbolicLink() || !info.isDirectory()) throw new Error("Browser artifact parent must be a physical workspace directory without symlinks or junctions");
+    assertInside(root, await realpath(parent));
   }
-  assertInside(root, parent);
-  await mkdir(dirname(candidate), { recursive: true });
   return candidate;
+}
+
+async function validateArtifactParent(cwd, candidate) {
+  const root = await realpath(cwd);
+  let parent = root;
+  for (const component of relative(root, dirname(candidate)).split(sep).filter(Boolean)) {
+    parent = join(parent, component);
+    const info = await lstat(parent);
+    if (info.isSymbolicLink() || !info.isDirectory()) throw new Error("Browser artifact parent must remain a physical workspace directory");
+    assertInside(root, await realpath(parent));
+  }
+}
+
+export async function writeBrowserArtifact(cwd, value, data) {
+  const artifactPath = await resolveBrowserArtifactPath(cwd, value);
+  await validateArtifactParent(cwd, artifactPath);
+  const handle = await open(artifactPath, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL, 0o600);
+  try {
+    const info = await handle.stat();
+    if (!info.isFile()) throw new Error("Browser artifact destination is not a regular file");
+    await handle.writeFile(data);
+  } finally { await handle.close(); }
+  return artifactPath;
 }
 
 function text(value, details = {}) { return { content: [{ type: "text", text: typeof value === "string" ? value : JSON.stringify(value, null, 2) }], details }; }
@@ -194,7 +218,7 @@ const browserClick = browserAction("browser_click", "Click an element using a fr
 const browserType = browserAction("browser_type", "Type text into an input using a fresh opaque ref from browser_observe.", async (page, p, _context, signal, value) => { await assertCurrentPageOrigin(value, signal); const record = consumeElementRef(value, p); const result = await page.evaluate(`(()=>{const elements=[...document.querySelectorAll('a,button,input,textarea,select,[role="button"]')];const e=elements[${record.index}];if(!e) throw new Error('STALE_REF');const signature=JSON.stringify({tag:e.tagName.toLowerCase(),role:e.getAttribute('role'),text:(e.innerText||e.value||e.getAttribute('aria-label')||'').trim().slice(0,300),type:e.getAttribute('type'),name:e.getAttribute('name'),href:e.href||null});if(signature!==${JSON.stringify(record.signature)}) throw new Error('STALE_REF');if(!/^(input|textarea)$/i.test(e.tagName)) throw new Error('Element is not text-editable');e.focus();e.value=${JSON.stringify(p.text)};e.dispatchEvent(new Event('input',{bubbles:true}));e.dispatchEvent(new Event('change',{bubbles:true}));return {typed:true}})()`, true, signal); clearBrowserRefs(value); return result; }, { text: Type.String(), ref: Type.String() });
 const browserScroll = browserAction("browser_scroll", "Scroll the page by a number of pixels.", async (page, p, _context, signal) => await page.evaluate(`(()=>{window.scrollBy(${Number(p.x || 0)},${Number(p.y || 600)}); return {scrollX:scrollX,scrollY:scrollY}})()`, true, signal), { x: Type.Optional(Type.Integer()), y: Type.Optional(Type.Integer()) });
 const browserTabs = defineTool({ name: "browser_tabs", label: "Browser tabs", description: "List open browser tabs, or switch to one by target id.", parameters: Type.Object({ sessionId: Type.String(), targetId: Type.Optional(Type.String()) }), execute: async (_id, p) => { const value = session(p); const tabs = await json(new URL("/json/list", value.endpoint).href); if (p.targetId) { const target = tabs.find(tab => tab.id === p.targetId); if (!target?.webSocketDebuggerUrl) throw new Error("Browser tab was not found or is not a page"); assertAllowedOrigin(value.allowedOrigin, target.url); clearBrowserRefs(value); value.page.close(); value.page = await new CdpPage(allowedCdpWebSocket(value.endpoint, target.webSocketDebuggerUrl)).connect(); if (!value.allowedOrigin && /^https?:/i.test(target.url)) value.allowedOrigin = new URL(target.url).origin; bindPage(value); return text({ tabs: tabs.map(tab => ({ id: tab.id, type: tab.type, title: tab.title, url: tab.url })), switched: p.targetId }); } return text({ tabs: tabs.map(tab => ({ id: tab.id, type: tab.type, title: tab.title, url: tab.url })), switched: false }); } });
-const browserScreenshot = browserAction("browser_screenshot", "Capture a PNG screenshot, optionally creating a new non-overwriting artifact inside the workspace.", async (page, p, context, signal) => { const artifactPath = p.path ? await resolveBrowserArtifactPath(context?.cwd, p.path) : null; const result = await page.call("Page.captureScreenshot", { format: "png", fromSurface: true }, signal); if (artifactPath) await writeFile(artifactPath, Buffer.from(result.data, "base64"), { flag: "wx" }); return { pngBase64: artifactPath ? undefined : result.data, path: p.path || null }; }, { path: Type.Optional(Type.String()) });
+const browserScreenshot = browserAction("browser_screenshot", "Capture a PNG screenshot, optionally creating a new non-overwriting artifact inside the workspace.", async (page, p, context, signal) => { const result = await page.call("Page.captureScreenshot", { format: "png", fromSurface: true }, signal); if (p.path) await writeBrowserArtifact(context?.cwd, p.path, Buffer.from(result.data, "base64")); return { pngBase64: p.path ? undefined : result.data, path: p.path || null }; }, { path: Type.Optional(Type.String()) });
 const browserCleanup = defineTool({ name: "browser_cleanup", label: "Browser cleanup", description: "Close one browser session, its launched process, and its isolated temporary profile.", parameters: Type.Object({ sessionId: Type.String() }), execute: async (_id, p) => { const value = session(p); try { value.page.close(); await stopProcess(value.process); if (value.profileDir) await rm(value.profileDir, { recursive: true, force: true }); } finally { sessions.delete(p.sessionId); } return text({ cleaned: true, sessionId: p.sessionId }); } });
 
 const computerNames = ["computer_observe", "computer_focus", "computer_click", "computer_type", "computer_key", "computer_scroll", "computer_screenshot"];

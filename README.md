@@ -91,6 +91,7 @@ Additional commands support explanation, comparison, evidence review, research b
 ```json
 {"id":"run-1","type":"prompt","text":"Inspect this repository"}
 {"id":"status-1","type":"status"}
+{"id":"history-1","type":"history"}
 {"id":"abort-1","type":"abort"}
 {"id":"shutdown-1","type":"shutdown"}
 ```

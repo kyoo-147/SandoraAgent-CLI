@@ -72,6 +72,11 @@ test("headless JSONL streams normalized events and a correlated final response",
     client.send({ id: "status-1", type: "status" });
     await waitFor(() => client.messages.filter(message => message.requestId === "status-1").length === 2, "duplicate id response missing");
     assert.equal(client.messages.filter(message => message.requestId === "status-1")[1].error.code, "duplicate_request");
+    client.send({ id: "history-1", type: "history" });
+    await waitFor(() => client.messages.some(message => message.requestId === "history-1"), "history response missing");
+    const history = client.messages.find(message => message.requestId === "history-1").result.messages;
+    assert.equal(history.at(-2).role, "user");
+    assert.equal(history.at(-1).text, "HEADLESS_OK");
     assert.deepEqual(client.messages.map(message => message.sequence), client.messages.map(message => message.sequence).slice().sort((a, b) => a - b));
     client.send({ id: "shutdown-1", type: "shutdown" });
     assert.deepEqual(await client.exit, { code: 0, signal: null });

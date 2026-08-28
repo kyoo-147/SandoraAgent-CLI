@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager } from "@earendil-works/pi-coding-agent";
 import { createPiSubagentsTool } from "../agents/pi-subagents.mjs";
 import { createPiWritableWorkerTools } from "../agents/pi-writable-workers.mjs";
-import { assertAgentSession } from "./agent-session.mjs";
+import { assertAgentSession, normalizeDisplayMessages } from "./agent-session.mjs";
 import { defineTool } from "../tools/registry.mjs";
 
 export async function createPiAgentSession({
@@ -52,6 +52,7 @@ export async function createPiAgentSession({
     model: session.model,
     getContextUsage: () => session.getContextUsage(),
     getLastAssistantText: () => session.getLastAssistantText(),
+    getDisplayMessages: () => normalizeDisplayMessages(session.messages),
     prompt: text => session.prompt(text),
     abort: () => session.abort(),
     dispose: () => session.dispose(),

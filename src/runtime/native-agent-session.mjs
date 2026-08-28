@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { EventBus, JsonlSessionStore, OpenAICompatibleProvider, runTurn } from "./turn-runtime.mjs";
 import { NativeToolRegistry, openAiTools, toolText } from "../tools/registry.mjs";
 import { createDelegateSubagentsTool } from "../agents/subagents.mjs";
-import { assertAgentSession } from "./agent-session.mjs";
+import { assertAgentSession, normalizeDisplayMessages } from "./agent-session.mjs";
 
 class OfflineProvider {
   constructor(model = "offline") { this.model = model; }
@@ -45,6 +45,7 @@ export async function createAgentSession({
     model: { id: provider.model || "custom" },
     getContextUsage: () => ({ tokens: Math.ceil(JSON.stringify(messages).length / 4) }),
     getLastAssistantText: () => messages.findLast(message => message?.role === "assistant")?.content,
+    getDisplayMessages: () => normalizeDisplayMessages(messages),
     subscribe(listener) {
       const unsubs = [
         bus.on("agent", listener),

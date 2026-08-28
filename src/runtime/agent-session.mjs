@@ -9,6 +9,7 @@
  * @property {Object|undefined} model
  * @property {() => Object|undefined} getContextUsage
  * @property {() => string|undefined} getLastAssistantText
+ * @property {() => Array<{role: "user"|"assistant", text: string}>} getDisplayMessages
  * @property {(text: string) => Promise<unknown>} prompt
  * @property {() => Promise<unknown>} abort
  * @property {() => void} dispose
@@ -49,4 +50,25 @@ export function withRunLifecycle(session) {
     subscribe: listener => { listeners.add(listener); return () => listeners.delete(listener); },
     dispose: () => { unsubscribeSource?.(); listeners.clear(); return session.dispose(); },
   });
+}
+
+function truncateUtf8(value, maxBytes) {
+  if (Buffer.byteLength(value) <= maxBytes) return value;
+  let low = 0, high = value.length;
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    if (Buffer.byteLength(value.slice(0, middle)) <= maxBytes) low = middle; else high = middle - 1;
+  }
+  return value.slice(0, low);
+}
+function displayText(content) {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content.filter(part => part?.type === "text" && typeof part.text === "string").map(part => part.text).join("");
+}
+
+/** Project runtime messages into a renderer-safe, tool-free conversation view. */
+export function normalizeDisplayMessages(messages, { maxMessages = 200, maxTextBytes = 20_000 } = {}) {
+  if (!Array.isArray(messages)) return [];
+  return messages.filter(message => message?.role === "user" || message?.role === "assistant").map(message => ({ role: message.role, text: truncateUtf8(displayText(message.content), maxTextBytes) })).filter(message => message.text).slice(-maxMessages);
 }

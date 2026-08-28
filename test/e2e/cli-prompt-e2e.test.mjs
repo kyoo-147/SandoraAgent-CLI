@@ -113,3 +113,28 @@ test("CLI /quit during streaming aborts the provider and exits cleanly", { timeo
     await rm(cwd, { recursive: true, force: true });
   }
 });
+
+test("CLI hydrates the visible conversation after native session restart", { timeout: 30_000 }, async () => {
+  const cwd = await mkdtemp(resolve(tmpdir(), "sandora-cli-resume-"));
+  const fixture = await fixtureServer();
+  let first;
+  let resumed;
+  try {
+    first = await startCli(cwd, fixture.port);
+    await delay(800);
+    first.child.stdin.write("remember this turn\n");
+    await waitFor(() => first.output().includes("CLI_FLOW_OK"), "first CLI did not complete persisted turn");
+    first.child.stdin.write("/quit\n");
+    assert.deepEqual(await first.exit, { code: 0, signal: null });
+
+    resumed = await startCli(cwd, fixture.port);
+    await waitFor(() => resumed.output().includes("remember this turn") && resumed.output().includes("CLI_FLOW_OK"), "resumed CLI did not hydrate persisted conversation");
+    resumed.child.stdin.write("/quit\n");
+    assert.deepEqual(await resumed.exit, { code: 0, signal: null });
+  } finally {
+    if (first?.child.exitCode === null) first.child.kill();
+    if (resumed?.child.exitCode === null) resumed.child.kill();
+    await closeServer(fixture.server);
+    await rm(cwd, { recursive: true, force: true });
+  }
+});

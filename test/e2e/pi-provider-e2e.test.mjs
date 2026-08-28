@@ -25,6 +25,9 @@ test("real Pi provider uses confined tools, resumes context, reports usage, and 
 
     session = await createPiAgentSession({ cwd, customTools: createCodingTools(), systemPrompt: "You are a test agent. Answer concisely." });
     assert.equal(session.sessionId, firstId);
+    const resumedDisplay = session.getDisplayMessages();
+    assert.ok(resumedDisplay.some(message => message.role === "user" && /workspace_read/.test(message.text)));
+    assert.ok(resumedDisplay.some(message => message.role === "assistant" && /SANDORA_E2E_TOKEN_7Q9/.test(message.text)));
     await session.prompt("What exact token did you read in the previous turn? Reply with only the token.");
     assert.match(session.getLastAssistantText() || "", /SANDORA_E2E_TOKEN_7Q9/);
 
