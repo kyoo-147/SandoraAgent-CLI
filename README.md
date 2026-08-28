@@ -158,3 +158,9 @@ The broader terminal-agent ecosystem provides useful design references:
 Sandora-specific branding, interface, launcher, and integrations are maintained in this repository.
 
 Pi is used as an attributed, pinned runtime dependency for the MVP: [Pi coding agent](https://github.com/earendil-works/pi).
+
+### Sandora plugin manifest V1
+
+Target manifests use `schemaVersion: 1`, `id`, `version`, `engine.sandora`, `entry`, `provides`, `requires`, `permissions`, `configurationSchema`, and optional `integrity`. The current engine is `0.1.0`; exact, wildcard, `^`, `~`, comparison, AND, and OR ranges are checked before the entry is imported. Legacy `api: 1` manifests remain supported unchanged.
+
+Manifest permissions are authorization upper bounds, not grants. Applications pass explicit per-plugin grants through `pluginPermissionGrants`; terminal/headless launches may use strict JSON such as `SANDORA_PLUGIN_PERMISSION_GRANTS='{"my-plugin":["tools.register"]}'`. A target plugin requesting an ungranted or unknown permission is rejected before import. Target activation receives an additive context (`pluginId`, immutable `services`, `events`, `config`, capability query/list snapshots, and `register(disposable)`) alongside the legacy contribution registration methods. Context views are read-only and contribution cleanup is reverse-order and idempotent. Plugin code remains trusted local code with the user's OS permissions; these declarations restrict Sandora-provided APIs but are not a sandbox. Process isolation, marketplace support, and service supervision are intentionally out of scope.

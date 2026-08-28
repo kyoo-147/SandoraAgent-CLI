@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { discoverPlugins, PluginHost, validateManifest } from "../../src/plugins/host.mjs";
 
 const manifest = (id, entry = "index.mjs", contributes = { tools: ["hello"], providers: ["local"], agents: ["review"], commands: ["greet"], services: ["clock"], hooks: ["startup"] }) => ({ id, name: id, version: "1.0.0", api: 1, entry, contributes });
+const targetManifest = (id, overrides = {}) => ({ schemaVersion: 1, id, version: "1.0.0", engine: { sandora: "^0.1.0" }, entry: "index.mjs", provides: [], requires: [], permissions: [], ...overrides });
 
 async function fixture(root, id, code, value = manifest(id)) {
   const dir = join(root, id);
@@ -114,4 +115,87 @@ test("rejects undeclared contributions and disposes all active plugins", async (
     await owned.disposeAll();
     assert.equal(globalThis.__pluginDisposeCount, 1);
   } finally { delete globalThis.__pluginDisposeCount; await rm(root, { recursive: true, force: true }); }
+});
+
+test("validates target V1 manifests and anchored 0.x engine ranges", () => {
+  for (const range of ["0.1.0", "0.1.x", "^0.1.0", "~0.1.0", ">=0.1.0 <0.2.0", "<0.2.0", "<=0.1.0", ">=0.2.0 || =0.1.0"]) assert.equal(validateManifest(targetManifest("target", { engine: { sandora: range } })).valid, true, range);
+  for (const range of ["0.2.0", ">0.1.0", "<0.1.0", "^0.2.0", "0.1.0 trailing"]) assert.equal(validateManifest(targetManifest("target", { engine: { sandora: range } })).valid, false, range);
+  assert.equal(validateManifest(targetManifest("target", { permissions: ["unknown"] })).valid, false);
+  assert.equal(validateManifest(targetManifest("target", { version: "v1.2.3" })).valid, false);
+  assert.equal(validateManifest(targetManifest("target", { version: "1.2.3-beta.1+build.7" })).valid, true);
+  assert.equal(validateManifest(targetManifest("target", { configurationSchema: [] })).valid, false);
+  assert.equal(validateManifest({ ...targetManifest("target"), schemaVersion: 2 }).valid, false);
+});
+
+test("target permission denial occurs before import and granted context is immutable", async () => {
+  const root = await mkdtemp(join(tmpdir(), "sandora-plugin-target-"));
+  try {
+    await fixture(root, "denied", "globalThis.__targetImported = true; export function activate() {}", targetManifest("denied", { permissions: ["network"] }));
+    const denied = new PluginHost({ enabled: ["denied"] }); await denied.load(await discoverPlugins(root));
+    assert.equal(denied.list()[0].state, "failed"); assert.equal(globalThis.__targetImported, undefined);
+    const config = { nested: { value: 1 } }, services = { nested: { ready: true } }, events = { nested: { name: "bus" } };
+    await fixture(root, "granted", `export function activate(ctx) {
+      globalThis.__targetContext = { pluginId: ctx.pluginId, configFrozen: Object.isFrozen(ctx.config.nested), servicesFrozen: Object.isFrozen(ctx.services.nested), eventsFrozen: Object.isFrozen(ctx.events.nested), caps: ctx.capabilities.list(), mutableAdd: typeof ctx.capabilities.add };
+      try { ctx.config.nested.value = 9; } catch {}
+      ctx.registerTool("target_tool", {});
+    }`, targetManifest("granted", { provides: ["tool:target_tool"], permissions: ["tools.register", "config.read", "services.use", "events.subscribe"] }));
+    const granted = new PluginHost({ enabled: ["granted"], config, services, events, capabilities: ["core:one"], permissionGrants: { granted: ["tools.register", "config.read", "services.use", "events.subscribe"] } });
+    await granted.load(await discoverPlugins(root));
+    assert.equal(granted.list().find(item => item.id === "granted").state, "active"); assert.deepEqual(globalThis.__targetContext, { pluginId: "granted", configFrozen: true, servicesFrozen: true, eventsFrozen: true, caps: ["core:one", "tool:target_tool"], mutableAdd: "undefined" });
+    assert.equal(config.nested.value, 1, "context freezing must not mutate caller-owned input");
+  } finally { delete globalThis.__targetImported; delete globalThis.__targetContext; await rm(root, { recursive: true, force: true }); }
+});
+
+test("all enabled plugin graphs pass admission before any dependency import", async () => {
+  const root = await mkdtemp(join(tmpdir(), "sandora-plugin-global-admission-"));
+  try {
+    await fixture(root, "admission-provider", "globalThis.__admissionProviderImported = true; export function activate() {}", targetManifest("admission-provider", { provides: ["cap:admission"] }));
+    await fixture(root, "denied-consumer", "globalThis.__deniedConsumerImported = true; export function activate() {}", targetManifest("denied-consumer", { requires: ["cap:admission"], permissions: ["network"] }));
+    const host = new PluginHost({ enabled: ["denied-consumer", "admission-provider"] }); await host.load(await discoverPlugins(root));
+    assert.equal(host.list().find(item => item.id === "denied-consumer").state, "failed"); assert.equal(globalThis.__admissionProviderImported, undefined); assert.equal(globalThis.__deniedConsumerImported, undefined);
+  } finally { delete globalThis.__admissionProviderImported; delete globalThis.__deniedConsumerImported; await rm(root, { recursive: true, force: true }); }
+});
+
+test("target dependencies activate in order and disable consumers before providers", async () => {
+  const root = await mkdtemp(join(tmpdir(), "sandora-plugin-deps-")); globalThis.__pluginOrder = [];
+  try {
+    await fixture(root, "consumer", `export function activate(ctx) { globalThis.__pluginOrder.push("consumer:start"); ctx.register(() => globalThis.__pluginOrder.push("consumer:stop")); }`, targetManifest("consumer", { requires: ["cap:provider"] }));
+    await fixture(root, "provider", `export function activate(ctx) { globalThis.__pluginOrder.push("provider:start"); ctx.register(() => globalThis.__pluginOrder.push("provider:stop")); }`, targetManifest("provider", { provides: ["cap:provider"] }));
+    const host = new PluginHost({ enabled: ["consumer", "provider"] }); await host.load(await discoverPlugins(root));
+    assert.deepEqual(globalThis.__pluginOrder, ["provider:start", "consumer:start"]);
+    await host.disable("provider");
+    assert.deepEqual(globalThis.__pluginOrder, ["provider:start", "consumer:start", "consumer:stop", "provider:stop"]);
+    assert.deepEqual(host.list().map(item => item.state), ["disabled", "disabled"]);
+  } finally { delete globalThis.__pluginOrder; await rm(root, { recursive: true, force: true }); }
+});
+
+test("target optional requirements activate while cycles fail before import", async () => {
+  const root = await mkdtemp(join(tmpdir(), "sandora-plugin-cycle-"));
+  try {
+    await fixture(root, "optional", "globalThis.__optionalActivated = true; export function activate() {}", targetManifest("optional", { requires: [{ capability: "cap:missing", optional: true }] }));
+    await fixture(root, "cycle-a", "globalThis.__cycleImported = true; export function activate() {}", targetManifest("cycle-a", { provides: ["cap:a"], requires: ["cap:b"] }));
+    await fixture(root, "cycle-b", "globalThis.__cycleImported = true; export function activate() {}", targetManifest("cycle-b", { provides: ["cap:b"], requires: ["cap:a"] }));
+    const host = new PluginHost({ enabled: ["optional", "cycle-a", "cycle-b"] }); await host.load(await discoverPlugins(root));
+    assert.equal(host.list().find(item => item.id === "optional").state, "active"); assert.equal(globalThis.__optionalActivated, true);
+    assert.notEqual(host.list().find(item => item.id === "cycle-a").state, "active"); assert.equal(globalThis.__cycleImported, undefined);
+  } finally { delete globalThis.__optionalActivated; delete globalThis.__cycleImported; await rm(root, { recursive: true, force: true }); }
+});
+
+test("ambiguous hard capability providers fail before any module import", async () => {
+  const root = await mkdtemp(join(tmpdir(), "sandora-plugin-ambiguous-"));
+  try {
+    for (const id of ["provider-one", "provider-two"]) await fixture(root, id, "export function activate() {}", targetManifest(id, { provides: ["cap:shared"] }));
+    await fixture(root, "consumer-ambiguous", "globalThis.__ambiguousImported = true; export function activate() {}", targetManifest("consumer-ambiguous", { requires: ["cap:shared"] }));
+    const host = new PluginHost({ enabled: ["consumer-ambiguous", "provider-one", "provider-two"] }); await host.load(await discoverPlugins(root));
+    assert.notEqual(host.list().find(item => item.id === "consumer-ambiguous").state, "active"); assert.equal(globalThis.__ambiguousImported, undefined);
+  } finally { delete globalThis.__ambiguousImported; await rm(root, { recursive: true, force: true }); }
+});
+
+test("registered and returned disposables unwind once in reverse order", async () => {
+  const root = await mkdtemp(join(tmpdir(), "sandora-plugin-dispose-")); globalThis.__disposeOrder = [];
+  try {
+    await fixture(root, "cleanup", `export function activate(ctx) { ctx.register(() => globalThis.__disposeOrder.push("one")); ctx.register(() => globalThis.__disposeOrder.push("two")); return () => globalThis.__disposeOrder.push("returned"); }`, targetManifest("cleanup"));
+    const host = new PluginHost({ enabled: ["cleanup"] }); await host.load(await discoverPlugins(root)); await host.disposeAll(); await host.disposeAll();
+    assert.deepEqual(globalThis.__disposeOrder, ["returned", "two", "one"]);
+  } finally { delete globalThis.__disposeOrder; await rm(root, { recursive: true, force: true }); }
 });
