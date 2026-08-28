@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import { browserTools, resolveBrowserArtifactPath } from "../../src/browser/tools.mjs";
+import { allowedCdpWebSocket, browserTools, resolveBrowserArtifactPath } from "../../src/browser/tools.mjs";
 
 test("browser and computer contracts are registered", () => {
   const names = browserTools.map(tool => tool.name);
@@ -37,4 +37,12 @@ test("browser endpoint policy rejects remote CDP without explicit authority", as
   const connect = browserTools.find(candidate => candidate.name === "browser_connect");
   await assert.rejects(() => connect.execute("test", { endpoint: "https://example.com:9222" }), /SANDORA_ALLOW_REMOTE_CDP/);
   await assert.rejects(() => connect.execute("test", { endpoint: "file:///tmp/cdp" }), /HTTP or HTTPS/);
+});
+
+test("CDP target WebSockets remain pinned to the authorized discovery endpoint", () => {
+  assert.equal(allowedCdpWebSocket("http://127.0.0.1:9222", "ws://127.0.0.1:9222/devtools/page/one"), "ws://127.0.0.1:9222/devtools/page/one");
+  assert.equal(allowedCdpWebSocket("https://127.0.0.1:443", "wss://127.0.0.1:443/devtools/page/one"), "wss://127.0.0.1/devtools/page/one");
+  assert.throws(() => allowedCdpWebSocket("http://127.0.0.1:9222", "ws://example.com:9222/devtools/page/one"), /host and port/);
+  assert.throws(() => allowedCdpWebSocket("http://127.0.0.1:9222", "wss://127.0.0.1:9222/devtools/page/one"), /transport/);
+  assert.throws(() => allowedCdpWebSocket("http://127.0.0.1:9222", "ws://user:pass@127.0.0.1:9222/devtools/page/one"), /credentials/);
 });
