@@ -45,14 +45,14 @@ function budgetFor(task) {
  * continue in the background and must not retain manager ownership.
  */
 export class SandoraAgentManager extends EventEmitter {
-  constructor({ runner, maxConcurrency = DEFAULT_MAX_CONCURRENCY, rampStep = DEFAULT_RAMP_STEP, cancellationTimeoutMs = DEFAULT_CANCEL_TIMEOUT_MS, id = "default", leaseRoot, leaseTtlMs } = {}) {
+  constructor({ runner, maxConcurrency = DEFAULT_MAX_CONCURRENCY, rampStep = DEFAULT_RAMP_STEP, cancellationTimeoutMs = DEFAULT_CANCEL_TIMEOUT_MS, id = "default", leaseRoot, leaseTtlMs, leaseManager } = {}) {
     super();
     if (typeof runner !== "function") throw new TypeError("runner must be a function");
     if (!Number.isInteger(maxConcurrency) || maxConcurrency < 1) throw new RangeError("maxConcurrency must be a positive integer");
     if (!Number.isInteger(rampStep) || rampStep < 1) throw new RangeError("rampStep must be a positive integer");
     if (!Number.isInteger(cancellationTimeoutMs) || cancellationTimeoutMs < 0) throw new RangeError("cancellationTimeoutMs must be a non-negative integer");
     this.runner = runner; this.maxConcurrency = maxConcurrency; this.rampStep = rampStep; this.cancellationTimeoutMs = cancellationTimeoutMs; this.id = String(id); this.runs = new Map();
-    this.leases = leaseRoot ? new FileTaskLeaseManager({ leaseRoot, ttlMs: leaseTtlMs }) : null;
+    this.leases = leaseManager ?? (leaseRoot ? new FileTaskLeaseManager({ leaseRoot, ttlMs: leaseTtlMs }) : null);
   }
 
   start(tasks, { runId, idempotencyKey } = {}) {
@@ -127,6 +127,11 @@ export class SandoraAgentManager extends EventEmitter {
     if (this.leases) {
       try { lease = await this.leases.acquire({ runId: run.id, agentId: task.agentId, attempt: task.attempts + 1, idempotencyKey: run.identity }); await this.leases.transition(lease, "RUNNING", { dispatchedAt: new Date().toISOString() }); }
       catch (error) { task.status = "failed"; task.error = error instanceof Error ? error.message : String(error); this.#emit(run, task); return; }
+    }
+    if (run.cancelled || task.status !== "queued") {
+      if (lease) { try { await this.leases.transition(lease, "CANCELLED", { terminalAt: new Date().toISOString(), reason: "cancelled-before-dispatch" }); } catch (error) { task.status = "failed"; task.error = error instanceof Error ? error.message : String(error); } }
+      this.#emit(run, task);
+      return;
     }
     task.status = "running"; task.attempts += 1; run.active += 1; run.unsettled += 1; this.#emit(run, task);
     const controller = new AbortController(); task.controller = controller;

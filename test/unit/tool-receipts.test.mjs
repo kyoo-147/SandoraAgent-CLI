@@ -1,11 +1,21 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { canonicalInputSha256, ToolReceiptStore, wrapToolsWithReceipts } from "../../src/tools/receipts.mjs";
 
 const rootFixture = () => mkdtemp(join(tmpdir(), "sandora-receipts-"));
+const canonical = value => value === null || typeof value !== "object" ? JSON.stringify(value) : Array.isArray(value) ? `[${value.map(canonical).join(",")}]` : `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}`;
+const reseal = record => { const unsealed = Object.fromEntries(Object.entries(record).filter(([key]) => key !== "recordSha256")); return { ...unsealed, recordSha256: createHash("sha256").update(canonical(unsealed)).digest("hex") }; };
+const runWorker = (root, marker) => new Promise((resolveWorker, reject) => {
+  const child = spawn(process.execPath, [join(process.cwd(), "scripts", "receipt-worker.mjs"), root, marker], { stdio: "ignore" });
+  child.once("error", reject);
+  child.once("close", code => code === 0 ? resolveWorker() : reject(new Error(`receipt worker exited ${code}`)));
+});
+async function recordAt(root, sessionId) { const directory = join(root, ".sandora", "receipts", sessionId); const names = await readdir(directory); const name = names.find(item => item.endsWith(".terminal.json")) || names[0]; return { path: join(directory, name), record: JSON.parse(await readFile(join(directory, name), "utf8")) }; }
 
 test("tool receipts canonicalize input and persist bounded terminal evidence", async () => {
   const root = await rootFixture();
@@ -18,12 +28,46 @@ test("tool receipts canonicalize input and persist bounded terminal evidence", a
     await assert.rejects(() => receipts.execute({ toolCallId: "call-one", toolName: "workspace_read", args: { path: "README.md" }, invoke: async () => { calls += 1; } }), /TOOL_RECEIPT_DUPLICATE/);
     await assert.rejects(() => receipts.execute({ toolCallId: "call-one", toolName: "workspace_read", args: { path: "other" }, invoke: async () => { calls += 1; } }), /TOOL_RECEIPT_COLLISION/);
     assert.equal(calls, 1);
-    const transcript = await readFile(join(root, ".sandora", "receipts", "session-one.jsonl"), "utf8");
-    assert.doesNotMatch(transcript, /README|private output/);
-    const events = transcript.trim().split(/\r?\n/).map(line => JSON.parse(line));
-    assert.deepEqual(events.map(event => event.phase), ["started", "succeeded"]);
-    assert.equal(events[0].sandbox, "UNAVAILABLE_APPLICATION_ONLY");
-    assert.equal(events[1].resultBytes, Buffer.byteLength("private output"));
+    const { record } = await recordAt(root, "session-one");
+    const serialized = JSON.stringify(record);
+    assert.doesNotMatch(serialized, /README|private output/);
+    assert.equal(record.state, "SUCCEEDED");
+    assert.equal(record.durability, "FILE_FSYNC");
+    assert.equal(record.resultBytes, Buffer.byteLength("private output"));
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("independent stores atomically claim one tool call", async () => {
+  const root = await rootFixture(); let calls = 0;
+  try {
+    const options = { cwd: root, sessionId: "shared", runtime: "pi" };
+    const invoke = async () => { calls += 1; await new Promise(resolveDelay => setTimeout(resolveDelay, 25)); return "done"; };
+    const outcomes = await Promise.allSettled([
+      new ToolReceiptStore(options).execute({ toolCallId: "same", toolName: "workspace_write", args: { path: "x" }, invoke }),
+      new ToolReceiptStore(options).execute({ toolCallId: "same", toolName: "workspace_write", args: { path: "x" }, invoke }),
+    ]);
+    assert.equal(calls, 1);
+    assert.equal(outcomes.filter(item => item.status === "fulfilled").length, 1);
+    assert.match(outcomes.find(item => item.status === "rejected").reason.message, /TOOL_RECEIPT_UNKNOWN/);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("separate processes cannot both claim the same tool call", async () => {
+  const root = await rootFixture(); const marker = join(root, "effects.txt");
+  try {
+    await Promise.all([runWorker(root, marker), runWorker(root, marker)]);
+    assert.equal(await readFile(marker, "utf8"), "x");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("malformed or forged terminal receipt fails unknown", async () => {
+  const root = await rootFixture();
+  try {
+    const receipts = new ToolReceiptStore({ cwd: root, sessionId: "tamper", runtime: "native" });
+    await receipts.execute({ toolCallId: "one", toolName: "workspace_read", args: {}, invoke: async () => "done" });
+    const { path, record } = await recordAt(root, "tamper");
+    await writeFile(path, JSON.stringify(reseal({ ...record, unexpected: true })));
+    await assert.rejects(() => receipts.execute({ toolCallId: "one", toolName: "workspace_read", args: {}, invoke: async () => "wrong" }), /TOOL_RECEIPT_UNKNOWN/);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
@@ -32,10 +76,9 @@ test("wrapped tools preserve provider callback identity and record blocked outco
   try {
     const [tool] = wrapToolsWithReceipts([{ name: "browser_click", execute: async () => { throw new Error("Browser consequential action blocked by policy"); } }], { cwd: root, sessionId: "session-two", runtime: "pi" });
     await assert.rejects(() => tool.execute("pi-call", { ref: "opaque" }), /blocked/);
-    const transcript = await readFile(join(root, ".sandora", "receipts", "session-two.jsonl"), "utf8");
-    const events = transcript.trim().split(/\r?\n/).map(line => JSON.parse(line));
-    assert.equal(events.at(-1).outcome, "BLOCKED");
-    assert.equal(events.at(-1).authority.variable, "SANDORA_ALLOW_BROWSER_SUBMIT");
-    assert.doesNotMatch(transcript, /opaque|consequential action/);
+    const { record } = await recordAt(root, "session-two");
+    assert.equal(record.outcome, "BLOCKED");
+    assert.equal(record.authority.variable, "SANDORA_ALLOW_BROWSER_SUBMIT");
+    assert.doesNotMatch(JSON.stringify(record), /opaque|consequential action/);
   } finally { await rm(root, { recursive: true, force: true }); }
 });

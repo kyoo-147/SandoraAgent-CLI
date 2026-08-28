@@ -69,7 +69,7 @@ Set `SANDORA_AGENT_CORE=native` to use Sandora's independent fallback runtime an
 
 The parent agent remains responsible for planning, synthesis, integration, testing, review, and Git delivery. Read-only delegation is bounded to four concurrent tasks. Writable workers receive separate Git worktrees under `.sandora/worktrees`; dirty or unintegrated work is preserved, and integration is disabled unless `SANDORA_ALLOW_WORKER_INTEGRATION=1` grants explicit runtime authority.
 
-The generic `SandoraAgentManager` accepts an optional shared `leaseRoot` for file-based task fencing. It atomically assigns one owner/fence token, durably marks dispatch and terminal state, rejects concurrent owners, fences stale completion, and reports expired or ambiguous ownership as `RECONCILE_REQUIRED` instead of replaying work. This coordinates manager ownership only; external side effects still require their own idempotency.
+The generic `SandoraAgentManager` accepts an optional shared `leaseRoot` for file-based task fencing. It atomically assigns one owner/fence token, serializes same-owner transitions with an exclusive lock, writes fsync-backed dispatch/terminal records, rejects concurrent or expired owners, and reports ambiguous ownership as `RECONCILE_REQUIRED` instead of replaying work. Explicit reconciliation installs a new fence and terminal resolution; it never automatically takes over side effects. This coordinates manager ownership only; external side effects still require their own idempotency.
 
 ## Commands
 
@@ -106,7 +106,7 @@ Sandora is designed to work autonomously inside the selected workspace. Workspac
 
 Package installation/execution commands such as `npm exec`, `pnpm dlx`, and package mutation are unavailable. Running repository-defined package scripts (`npm test`, `npm run …`, and equivalents) requires explicit `SANDORA_ALLOW_PACKAGE_SCRIPTS=1` authority because package manifests regain arbitrary project-code execution.
 
-Sandora writes provider-neutral tool-control receipts under `.sandora/receipts/<session-id>.jsonl`. Receipts preserve call identity, canonical input hashes, authority/enforcement status, bounded result or error hashes, and terminal outcome without persisting raw arguments or outputs. Duplicate, colliding, or ambiguous previously-started call identities fail closed rather than automatically replaying possible side effects. These are application-level audit receipts, not OS-sandbox or exactly-once external-side-effect proof.
+Sandora writes one provider-neutral, fsync-backed tool-control record per call under `.sandora/receipts/<session-id>/`. Exclusive creation atomically claims a call identity across store instances and processes; sealed records preserve canonical input hashes, authority/enforcement status, bounded result or error hashes, and terminal outcome without raw arguments or outputs. Duplicate, colliding, malformed, or previously-started ambiguous identities fail closed rather than automatically replaying possible side effects. These are application-level audit receipts, not OS-sandbox, hostile-filesystem integrity, power-loss-proof directory transactions, or exactly-once external-side-effect proof.
 
 Local merge and pull-request merge capabilities are disabled by default. Grant them explicitly with `SANDORA_ALLOW_LOCAL_MERGE=1` or `SANDORA_ALLOW_PR_MERGE=1`. PR merge also requires a non-draft mergeable PR with successful checks; allowing a PR with no checks additionally requires `SANDORA_ALLOW_UNCHECKED_PR_MERGE=1`.
 
