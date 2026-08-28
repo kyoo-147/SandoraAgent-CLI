@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import { createAgentSession as createNativeAgentSession } from "./native-agent-session.mjs";
-import { createPiAgentSession } from "./pi-agent-session.mjs";
 import { NativeToolRegistry } from "../tools/registry.mjs";
 import { assertAgentSession, withRunLifecycle } from "./agent-session.mjs";
 import { configuredPluginIds, configuredPluginPermissionGrants, loadSessionPlugins } from "../plugins/runtime.mjs";
@@ -24,7 +23,7 @@ export async function createSandoraSession({
   const bindOwner = tool => ({ ...tool, execute: (toolCallId, args, signal, update, context) => tool.execute(toolCallId, args, signal, update, { ...context, resourceOwnerId }) });
   try {
     let base;
-    if (core === "pi") base = await createPiAgentSession({ ...options, customTools: [...customTools, ...plugins.tools].map(bindOwner) });
+    if (core === "pi") { const { createPiAgentSession } = await import("./pi-agent-session.mjs"); base = await createPiAgentSession({ ...options, customTools: [...customTools, ...plugins.tools].map(bindOwner) }); }
     else {
       const registry = new NativeToolRegistry().registerAll([...customTools, ...plugins.tools].map(bindOwner));
       base = await createNativeAgentSession({ ...options, ...(plugins.provider ? { provider: plugins.provider } : {}), registry });
