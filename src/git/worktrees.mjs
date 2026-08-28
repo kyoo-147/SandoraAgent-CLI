@@ -1,4 +1,5 @@
 import { execFile as execFileCallback } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
 import { mkdir, readFile, writeFile, rm, access, lstat, realpath, rename } from "node:fs/promises";
 import { Buffer } from "node:buffer";
@@ -65,8 +66,12 @@ export class GitWorktreeManager {
       await access(path);
       throw new GitWorktreeError(`Worker worktree already exists: ${path}`);
     } catch (error) { if (error instanceof GitWorktreeError) throw error; }
+    try {
+      await access(this.metadataPath(workerId));
+      throw new GitWorktreeError(`Worker metadata already exists for ${workerId}; recover it before creating a replacement`);
+    } catch (error) { if (error instanceof GitWorktreeError) throw error; }
     const baseCommit = (await this.git(["rev-parse", "--verify", `${baseRef}^{commit}`])).stdout.trim();
-    const ownershipToken = `${workerId}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
+    const ownershipToken = `${workerId}:${randomUUID()}`;
     const intent = { version: 1, phase: "reserved", workerId, owner, branch: branchName, baseRef: baseCommit, path, repoRoot: this.repoRoot, ownershipToken, createdAt: new Date().toISOString() };
     try { await writeFile(this.intentPath(workerId), JSON.stringify(intent, null, 2) + "\n", { encoding: "utf8", flag: "wx" }); }
     catch (error) { if (error.code === "EEXIST") throw new GitWorktreeError(`Worker ${workerId} already has an active creation intent`); throw error; }
@@ -75,7 +80,7 @@ export class GitWorktreeManager {
       const result = await this.git(["worktree", "add", "-b", branchName, path, baseCommit]);
       worktreeAdded = true;
       const metadata = { ...intent, phase: "ready", sourceDirty: dirty };
-      const temporary = `${this.metadataPath(workerId)}.${process.pid}.tmp`;
+      const temporary = `${this.metadataPath(workerId)}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`;
       await writeFile(temporary, JSON.stringify(metadata, null, 2) + "\n", { encoding: "utf8", flag: "wx" });
       await rename(temporary, this.metadataPath(workerId));
       await rm(this.intentPath(workerId), { force: true });
@@ -87,7 +92,34 @@ export class GitWorktreeManager {
     }
   }
 
-  async metadata(workerId) { return JSON.parse(await readFile(this.metadataPath(workerId), "utf8")); }
+  validateRecord(workerId, record, { ready = true } = {}) {
+    safeId(workerId);
+    if (!record || record.version !== 1 || record.workerId !== workerId) throw new GitWorktreeError(`Invalid worker metadata identity for ${workerId}`);
+    if (ready && record.phase !== "ready") throw new GitWorktreeError(`Worker ${workerId} metadata is not ready`);
+    if (resolve(record.repoRoot || "") !== this.repoRoot || resolve(record.path || "") !== this.pathFor(workerId)) throw new GitWorktreeError(`Worker ${workerId} metadata path or repository mismatch`);
+    safeRef(record.branch, "worker branch");
+    if (!/^[0-9a-f]{40,64}$/i.test(record.baseRef || "")) throw new GitWorktreeError(`Worker ${workerId} metadata base commit is invalid`);
+    if (!record.branch.startsWith("sandora/swarm/") || typeof record.ownershipToken !== "string" || !record.ownershipToken.startsWith(`${workerId}:`)) throw new GitWorktreeError(`Worker ${workerId} metadata ownership is invalid`);
+    return record;
+  }
+
+  async optionalRecord(path) {
+    try { return JSON.parse(await readFile(path, "utf8")); }
+    catch (error) { if (error.code === "ENOENT") return null; throw new GitWorktreeError(`Unable to read worker recovery record: ${error.message}`); }
+  }
+
+  async metadata(workerId, ownershipToken) {
+    const record = this.validateRecord(workerId, await this.optionalRecord(this.metadataPath(workerId)));
+    if (ownershipToken !== undefined && record.ownershipToken !== ownershipToken) throw new GitWorktreeError(`Worker ${workerId} ownership token mismatch`);
+    return record;
+  }
+
+  async recoveryHandle(workerId) {
+    const record = await this.optionalRecord(this.metadataPath(workerId)) || await this.optionalRecord(this.intentPath(workerId));
+    if (!record) return null;
+    const valid = this.validateRecord(workerId, record, { ready: false });
+    return { workerId, ownershipToken: valid.ownershipToken, branch: valid.branch, worktree: valid.path, recoverable: true };
+  }
   async dirtyState(cwd, { ignore = [] } = {}) {
     const status = await this.git(["status", "--porcelain=v1", "-z"], { cwd });
     const diff = await this.git(["diff", "--binary"], { cwd });
@@ -113,52 +145,54 @@ export class GitWorktreeManager {
     return { status: statusFiles.join("\0"), patch: diff.stdout, stagedPatch: staged.stdout, untracked, dirty: Boolean(statusFiles.length) };
   }
 
-  async inspect(workerId) {
-    const meta = await this.metadata(workerId);
+  async inspect(workerId, { ownershipToken } = {}) {
+    const meta = await this.metadata(workerId, ownershipToken);
     const state = await this.dirtyState(meta.path);
     const branch = await this.git(["branch", "--show-current"], { cwd: meta.path });
     return { ...meta, ...state, branch: branch.stdout.trim() };
   }
 
-  async collectDiff(workerId) {
-    const meta = await this.metadata(workerId);
-    const result = await this.git(["diff", "--binary", meta.baseRef, meta.branch], { cwd: meta.path });
-    const working = await this.git(["diff", "--binary", meta.baseRef], { cwd: meta.path });
+  async collectDiff(workerId, { ownershipToken } = {}) {
+    const meta = await this.metadata(workerId, ownershipToken);
+    const result = await this.git(["diff", "--binary", meta.baseRef, meta.branch, "--"], { cwd: meta.path });
+    const working = await this.git(["diff", "--binary", meta.baseRef, "--"], { cwd: meta.path });
     return { workerId, branch: meta.branch, baseRef: meta.baseRef, patch: result.stdout, workingPatch: working.stdout, changed: Boolean(result.stdout || working.stdout) };
   }
 
-  async validate(workerId, { command = ["status", "--porcelain"] } = {}) {
-    const meta = await this.metadata(workerId);
-    const check = await this.git(["diff", "--check", meta.baseRef], { cwd: meta.path, allowFailure: true });
+  async validate(workerId, { command = ["status", "--porcelain"], ownershipToken } = {}) {
+    const meta = await this.metadata(workerId, ownershipToken);
+    const check = await this.git(["diff", "--check", meta.baseRef, "--"], { cwd: meta.path, allowFailure: true });
     const commandResult = await this.git(command, { cwd: meta.path, allowFailure: true });
     return { workerId, valid: check.code === 0 && commandResult.code === 0, diffCheck: check, command: commandResult };
   }
 
-  async conflicts(workerId, targetRef = "HEAD") {
-    const meta = await this.metadata(workerId);
+  async conflicts(workerId, targetRef = "HEAD", { ownershipToken } = {}) {
+    const meta = await this.metadata(workerId, ownershipToken);
     const result = await this.git(["merge-tree", "--write-tree", targetRef, meta.branch], { cwd: this.repoRoot, allowFailure: true });
     return { workerId, targetRef, branch: meta.branch, conflict: result.code !== 0, output: `${result.stdout}${result.stderr}`.trim() };
   }
 
-  async integrate(workerId, { targetRef = "HEAD", message } = {}) {
+  async integrate(workerId, { targetRef = "HEAD", message, ownershipToken } = {}) {
     safeRef(targetRef, "target ref");
     const currentBranch = (await this.git(["branch", "--show-current"])).stdout.trim();
     if (!currentBranch || isProtectedBranch(currentBranch)) throw new GitWorktreeError(`Refusing worker integration into protected or detached target: ${currentBranch || "detached"}`);
     const targetOid = (await this.git(["rev-parse", "--verify", `${targetRef}^{commit}`])).stdout.trim();
     const headOid = (await this.git(["rev-parse", "HEAD"])).stdout.trim();
     if (targetOid !== headOid) throw new GitWorktreeError("Integration targetRef does not match current HEAD");
-    const conflict = await this.conflicts(workerId, targetOid);
+    if (!ownershipToken) throw new GitWorktreeError(`Worker ${workerId} ownership token is required for integration`);
+    const conflict = await this.conflicts(workerId, targetOid, { ownershipToken });
     if (conflict.conflict) throw new GitWorktreeError(`Integration conflict for ${workerId}`, conflict);
     const state = await this.dirtyState(this.repoRoot, { ignore: this.ownedIgnorePaths() });
     if (state.dirty) throw new GitWorktreeError("Refusing integration into a dirty target", { state });
     const recheckedHead = (await this.git(["rev-parse", "HEAD"])).stdout.trim();
     if (recheckedHead !== headOid) throw new GitWorktreeError("Integration target changed during validation");
-    const result = await this.git(["merge", "--no-ff", metaBranch(await this.metadata(workerId)), "-m", message || `Integrate worker ${workerId}`]);
+    const result = await this.git(["merge", "--no-ff", metaBranch(await this.metadata(workerId, ownershipToken)), "-m", message || `Integrate worker ${workerId}`]);
     return { workerId, integrated: true, output: result.stdout.trim() };
   }
 
-  async cleanup(workerId, { preserveDirty = true, deleteBranch = true, targetRef = "HEAD" } = {}) {
-    const meta = await this.metadata(workerId);
+  async cleanup(workerId, { preserveDirty = true, deleteBranch = true, targetRef = "HEAD", ownershipToken } = {}) {
+    if (!ownershipToken) throw new GitWorktreeError(`Worker ${workerId} ownership token is required for cleanup`);
+    const meta = await this.metadata(workerId, ownershipToken);
     const state = await this.dirtyState(meta.path);
     if (state.dirty) {
       if (!preserveDirty) throw new GitWorktreeError(`Refusing to discard dirty worker ${workerId}`, { state });
@@ -174,10 +208,29 @@ export class GitWorktreeManager {
     return { workerId, cleaned: true, preserved: false, preservationPath: null };
   }
 
-  async recover(workerId) {
-    const meta = await this.metadata(workerId);
-    const result = await this.git(["worktree", "prune", "--dry-run"], { allowFailure: true });
-    return { workerId, registered: result.code === 0, path: meta.path, output: result.stdout.trim() };
+  async recover(workerId, { ownershipToken } = {}) {
+    safeId(workerId);
+    const rawMeta = await this.optionalRecord(this.metadataPath(workerId));
+    const rawIntent = await this.optionalRecord(this.intentPath(workerId));
+    if (!rawMeta && !rawIntent) return { workerId, state: "UNKNOWN", repaired: false, reason: "No metadata or creation intent exists" };
+    const meta = rawMeta ? this.validateRecord(workerId, rawMeta) : null;
+    const intent = rawIntent ? this.validateRecord(workerId, rawIntent, { ready: false }) : null;
+    if (!ownershipToken) throw new GitWorktreeError(`Worker ${workerId} ownership token is required for recovery`);
+    if ((meta || intent).ownershipToken !== ownershipToken) return { workerId, state: "OWNER_CONFLICT", repaired: false, path: (meta || intent).path };
+    if (meta && intent && meta.ownershipToken !== intent.ownershipToken) return { workerId, state: "OWNER_CONFLICT", repaired: false, path: meta.path };
+    const listing = await this.git(["worktree", "list", "--porcelain"]);
+    const records = listing.stdout.trim().split(/\r?\n\r?\n/).filter(Boolean).map(block => Object.fromEntries(block.split(/\r?\n/).map(line => { const space = line.indexOf(" "); return space < 0 ? [line, true] : [line.slice(0, space), line.slice(space + 1)]; })));
+    const expectedPath = this.pathFor(workerId);
+    const expectedBranch = (meta || intent).branch;
+    const registered = records.some(record => resolve(record.worktree || "") === expectedPath && record.branch === `refs/heads/${expectedBranch}`);
+    if (meta) return { workerId, state: registered ? "READY" : "MISSING_WORKTREE", repaired: false, registered, path: meta.path, branch: meta.branch };
+    if (!registered) return { workerId, state: "RESERVED_NO_WORKTREE", repaired: false, registered: false, path: intent.path, branch: intent.branch };
+    const repaired = { ...intent, phase: "ready", recoveredAt: new Date().toISOString(), sourceDirty: intent.sourceDirty || null };
+    const temporary = `${this.metadataPath(workerId)}.${process.pid}.${Date.now()}.tmp`;
+    await writeFile(temporary, JSON.stringify(repaired, null, 2) + "\n", { encoding: "utf8", flag: "wx" });
+    await rename(temporary, this.metadataPath(workerId));
+    await rm(this.intentPath(workerId), { force: true });
+    return { workerId, state: "READY", repaired: true, registered: true, path: repaired.path, branch: repaired.branch };
   }
 
   static integrationOrder(workers) {

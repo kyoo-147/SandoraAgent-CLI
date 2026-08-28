@@ -87,11 +87,26 @@ Type `/` in the CLI to open command completion.
 
 Additional commands support explanation, comparison, evidence review, research briefs, critique, summarization, and translation.
 
+## Headless JSONL transport
+
+`npm run jsonl` exposes the same Sandora session and normalized events over newline-delimited JSON for automation. Standard output contains protocol envelopes only; diagnostics use standard error.
+
+```json
+{"id":"run-1","type":"prompt","text":"Inspect this repository"}
+{"id":"status-1","type":"status"}
+{"id":"abort-1","type":"abort"}
+{"id":"shutdown-1","type":"shutdown"}
+```
+
+Every output envelope includes `protocol: "sandora-jsonl"`, `version: 1`, a monotonic sequence, a correlated request ID, and a `ready`, `accepted`, `event`, `response`, or `fatal` kind. Only one prompt may be active; duplicate IDs and overlapping runs fail closed.
+
 ## Safety
 
 Sandora is designed to work autonomously inside the selected workspace. Workspace tools enforce path and symlink checks, child processes receive a filtered environment, destructive shell patterns fail closed, commits require a feature branch and explicit paths, and force pushes are not exposed.
 
 Local merge and pull-request merge capabilities are disabled by default. Grant them explicitly with `SANDORA_ALLOW_LOCAL_MERGE=1` or `SANDORA_ALLOW_PR_MERGE=1`. PR merge also requires a non-draft mergeable PR with successful checks; allowing a PR with no checks additionally requires `SANDORA_ALLOW_UNCHECKED_PR_MERGE=1`.
+
+Browser navigation pins the requested origin and refuses cross-origin redirects, links, observations, and tab switches by default. Grant an intentional cross-origin transition with `SANDORA_ALLOW_BROWSER_CROSS_ORIGIN=1`; consequential submit/send/delete/pay actions separately require `SANDORA_ALLOW_BROWSER_SUBMIT=1`.
 
 The parent process runs with the permissions of the current user. Use a container or OS sandbox when stronger isolation is required. Worker restrictions in this MVP are application-level, not a security boundary.
 

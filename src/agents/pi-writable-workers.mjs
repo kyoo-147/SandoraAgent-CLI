@@ -17,6 +17,7 @@ function text(value, details = {}) {
 export function createPiWritableWorkerTools({ cwd, agentDir, modelRuntime, model, thinkingLevel = "medium" } = {}) {
   const manager = new GitWorktreeManager({ repoRoot: cwd });
   const workerId = Type.String({ minLength: 1, maxLength: 64, pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$" });
+  const ownershipToken = Type.String({ minLength: 8, maxLength: 256, pattern: "^[A-Za-z0-9._:-]+$" });
   const workerVerify = defineTool({
     name: "worker_verify",
     label: "Worker verify",
@@ -76,11 +77,11 @@ export function createPiWritableWorkerTools({ cwd, agentDir, modelRuntime, model
         combined.addEventListener("abort", abort, { once: true });
         try { await session.prompt(params.task); }
         finally { combined.removeEventListener("abort", abort); }
-        const inspection = await manager.inspect(params.workerId);
-        const diff = await manager.collectDiff(params.workerId);
-        return text({ workerId: params.workerId, status: combined.aborted ? "cancelled" : "completed", branch: meta.branch, worktree: meta.path, dirty: inspection.dirty, changed: diff.changed, report: session.getLastAssistantText() || "(no worker report)", patch: diff.patch || diff.workingPatch || "" }, { workerId: params.workerId, branch: meta.branch, worktree: meta.path, recoverable: true });
+        const inspection = await manager.inspect(params.workerId, { ownershipToken: meta.ownershipToken });
+        const diff = await manager.collectDiff(params.workerId, { ownershipToken: meta.ownershipToken });
+        return text({ workerId: params.workerId, ownershipToken: meta.ownershipToken, status: combined.aborted ? "cancelled" : "completed", branch: meta.branch, worktree: meta.path, dirty: inspection.dirty, changed: diff.changed, report: session.getLastAssistantText() || "(no worker report)", patch: diff.patch || diff.workingPatch || "" }, { workerId: params.workerId, ownershipToken: meta.ownershipToken, branch: meta.branch, worktree: meta.path, recoverable: true });
       } catch (error) {
-        const recovery = meta ? { workerId: params.workerId, branch: meta.branch, worktree: meta.path, recoverable: true } : { workerId: params.workerId, recoverable: false };
+        const recovery = meta ? { workerId: params.workerId, ownershipToken: meta.ownershipToken, branch: meta.branch, worktree: meta.path, recoverable: true } : await manager.recoveryHandle(params.workerId).catch(() => null) || { workerId: params.workerId, recoverable: false };
         throw Object.assign(new Error(`${error instanceof Error ? error.message : String(error)}${meta ? `; worker preserved at ${meta.path}` : ""}`), { recovery });
       } finally {
         session?.dispose();
@@ -88,11 +89,13 @@ export function createPiWritableWorkerTools({ cwd, agentDir, modelRuntime, model
     },
   });
 
-  const inspect = defineTool({ name: "worker_inspect", label: "Inspect worker", description: "Inspect a recoverable writable worker's branch, worktree, status, and diff.", parameters: Type.Object({ workerId }), execute: async (_id, params) => { const state = await manager.inspect(params.workerId); const diff = await manager.collectDiff(params.workerId); return text({ ...state, patch: diff.patch || diff.workingPatch || "" }, { workerId: params.workerId, recoverable: true }); } });
+  const recover = defineTool({ name: "worker_recover", label: "Recover worker", description: "Classify or repair one owned interrupted worker creation without deleting work or branches.", parameters: Type.Object({ workerId, ownershipToken }), execute: async (_id, params) => text(await manager.recover(params.workerId, { ownershipToken: params.ownershipToken }), { workerId: params.workerId, recoverable: true }) });
 
-  const integrate = defineTool({ name: "worker_integrate", label: "Integrate worker", description: "Validate and merge a completed worker branch into the current clean branch only when SANDORA_ALLOW_WORKER_INTEGRATION=1 grants runtime authority.", parameters: Type.Object({ workerId }), execute: async (_id, params) => { if (process.env.SANDORA_ALLOW_WORKER_INTEGRATION !== "1") throw new Error("Worker integration capability is disabled; set SANDORA_ALLOW_WORKER_INTEGRATION=1 with explicit authority"); const state = await manager.inspect(params.workerId); if (state.dirty) throw new Error("Refusing integration of a dirty worker; preserve or commit its changes first"); const diff = await manager.collectDiff(params.workerId); if (!diff.changed) throw new Error("Refusing integration of a worker with no committed changes"); const validation = await manager.validate(params.workerId); if (!validation.valid) throw new Error(`Worker validation failed: ${validation.diffCheck.stderr || validation.command.stderr}`); const result = await manager.integrate(params.workerId); return text(result, { workerId: params.workerId, integrated: true }); } });
+  const inspect = defineTool({ name: "worker_inspect", label: "Inspect worker", description: "Inspect a recoverable writable worker using the ownership token returned at creation.", parameters: Type.Object({ workerId, ownershipToken }), execute: async (_id, params) => { const state = await manager.inspect(params.workerId, params); const diff = await manager.collectDiff(params.workerId, params); return text({ ...state, patch: diff.patch || diff.workingPatch || "" }, { workerId: params.workerId, ownershipToken: params.ownershipToken, recoverable: true }); } });
 
-  const cleanup = defineTool({ name: "worker_cleanup", label: "Clean worker", description: "Clean a worker only when it is clean and proven integrated; dirty or unintegrated work remains recoverable.", parameters: Type.Object({ workerId }), execute: async (_id, params) => text(await manager.cleanup(params.workerId), { workerId: params.workerId }) });
+  const integrate = defineTool({ name: "worker_integrate", label: "Integrate worker", description: "Validate and merge an owned completed worker branch into the current clean branch only when SANDORA_ALLOW_WORKER_INTEGRATION=1 grants runtime authority.", parameters: Type.Object({ workerId, ownershipToken }), execute: async (_id, params) => { if (process.env.SANDORA_ALLOW_WORKER_INTEGRATION !== "1") throw new Error("Worker integration capability is disabled; set SANDORA_ALLOW_WORKER_INTEGRATION=1 with explicit authority"); const state = await manager.inspect(params.workerId, params); if (state.dirty) throw new Error("Refusing integration of a dirty worker; preserve or commit its changes first"); const diff = await manager.collectDiff(params.workerId, params); if (!diff.changed) throw new Error("Refusing integration of a worker with no committed changes"); const validation = await manager.validate(params.workerId, { ownershipToken: params.ownershipToken }); if (!validation.valid) throw new Error(`Worker validation failed: ${validation.diffCheck.stderr || validation.command.stderr}`); const result = await manager.integrate(params.workerId, { ownershipToken: params.ownershipToken }); return text(result, { workerId: params.workerId, integrated: true }); } });
 
-  return [run, inspect, integrate, cleanup];
+  const cleanup = defineTool({ name: "worker_cleanup", label: "Clean worker", description: "Clean an owned worker only when it is clean and proven integrated; dirty or unintegrated work remains recoverable.", parameters: Type.Object({ workerId, ownershipToken }), execute: async (_id, params) => text(await manager.cleanup(params.workerId, { ownershipToken: params.ownershipToken }), { workerId: params.workerId }) });
+
+  return [run, recover, inspect, integrate, cleanup];
 }

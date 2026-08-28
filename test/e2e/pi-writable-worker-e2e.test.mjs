@@ -30,14 +30,16 @@ test("real writable Pi worker edits and commits in isolation before guarded inte
 
     const result = await execute(tools, "delegate_writable_worker", { workerId: "writer-e2e", task: "Create worker.txt containing exactly WORKER_ISOLATED_OK followed by a newline. Verify the file, review Git status and diff, then commit only worker.txt with message 'feat: add worker evidence'." }, cwd);
     assert.equal(result.details.recoverable, true);
+    const ownershipToken = result.details.ownershipToken;
+    assert.match(ownershipToken, /^writer-e2e:/);
     await assert.rejects(() => readFile(join(cwd, "worker.txt")), /ENOENT/);
-    const inspection = await execute(tools, "worker_inspect", { workerId: "writer-e2e" }, cwd);
+    const inspection = await execute(tools, "worker_inspect", { workerId: "writer-e2e", ownershipToken }, cwd);
     assert.match(inspection.content[0].text, /worker\.txt/);
 
     process.env.SANDORA_ALLOW_WORKER_INTEGRATION = "1";
-    await execute(tools, "worker_integrate", { workerId: "writer-e2e" }, cwd);
+    await execute(tools, "worker_integrate", { workerId: "writer-e2e", ownershipToken }, cwd);
     assert.equal((await readFile(join(cwd, "worker.txt"), "utf8")).replace(/\r\n/g, "\n"), "WORKER_ISOLATED_OK\n");
-    const cleanup = await execute(tools, "worker_cleanup", { workerId: "writer-e2e" }, cwd);
+    const cleanup = await execute(tools, "worker_cleanup", { workerId: "writer-e2e", ownershipToken }, cwd);
     assert.equal(cleanup.details.workerId, "writer-e2e");
     assert.match(cleanup.content[0].text, /"cleaned": true/);
   } finally {
