@@ -451,11 +451,7 @@ function submit(text) {
   state.responseStartedAt = 0;
   startActivityTicker();
   render();
-  void session.prompt(text).then(() => {
-    dispatch({ type: state.abortRequested ? "run.abort" : "run.complete" });
-  }).catch((error) => {
-    dispatch(state.abortRequested ? { type: "run.abort" } : { type: "run.error", error: error instanceof Error ? error.message : String(error) });
-  }).finally(() => {
+  void session.prompt(text).catch(() => { /* run.error/run.abort arrives through the shared session lifecycle */ }).finally(() => {
     stopActivityTicker();
     state = cleanupOutput(state);
     render();

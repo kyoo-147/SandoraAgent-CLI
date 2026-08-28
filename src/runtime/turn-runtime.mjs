@@ -1,4 +1,5 @@
-import { appendFile, mkdir, readFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { dirname, resolve } from "node:path";
 
 export class EventBus {
@@ -134,11 +135,32 @@ export async function runTurn({ provider, messages = [], tools = [], executeTool
 export class JsonlSessionStore {
   #sequence;
   #tail = Promise.resolve();
-  constructor(filePath) { this.filePath = resolve(filePath); }
+  constructor(filePath) { this.filePath = resolve(filePath); this.lastRecovery = null; }
+  async #repairCrashTail() {
+    let bytes;
+    try { bytes = await readFile(this.filePath); } catch (error) { if (error.code === "ENOENT") return; throw error; }
+    if (!bytes.length || bytes.at(-1) === 0x0a) return;
+    const lastNewline = bytes.lastIndexOf(0x0a);
+    const tail = bytes.subarray(lastNewline + 1);
+    let complete = false;
+    try { JSON.parse(tail.toString("utf8")); complete = true; } catch { /* preserve malformed crash tail separately */ }
+    const replacement = complete ? Buffer.concat([bytes, Buffer.from("\n")]) : bytes.subarray(0, lastNewline + 1);
+    await mkdir(dirname(this.filePath), { recursive: true });
+    const temporary = `${this.filePath}.${process.pid}.${randomUUID()}.repair.tmp`;
+    let quarantinePath = null;
+    if (!complete) {
+      quarantinePath = `${this.filePath}.${new Date().toISOString().replace(/[:.]/g, "-")}.${randomUUID()}.crash-tail`;
+      await writeFile(quarantinePath, tail, { flag: "wx" });
+    }
+    await writeFile(temporary, replacement, { flag: "wx" });
+    await rename(temporary, this.filePath);
+    this.lastRecovery = { type: complete ? "terminated-complete-tail" : "quarantined-malformed-tail", bytes: tail.length, quarantinePath };
+  }
   async append(event) {
     if (!event || typeof event !== "object" || Array.isArray(event)) throw new TypeError("event must be an object");
     const pending = this.#tail.then(async () => {
       if (this.#sequence === undefined) {
+        await this.#repairCrashTail();
         const existing = await this.replay();
         this.#sequence = existing.reduce((max, item) => Math.max(max, Number.isInteger(item.sequence) ? item.sequence : 0), 0);
       }

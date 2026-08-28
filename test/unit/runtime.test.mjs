@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { appendFile, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EventBus, JsonlSessionStore, OpenAICompatibleProvider, runTurn } from "../../src/runtime/turn-runtime.mjs";
@@ -134,4 +134,34 @@ test("JSONL store serializes concurrent append sequence numbers", async () => {
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test("JSONL append quarantines a malformed crash tail before resuming", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "sandora-session-repair-"));
+  try {
+    const path = join(dir, "session.jsonl");
+    const safe = '{"schemaVersion":1,"type":"message","message":{"role":"user","content":"safe"},"sequence":1,"timestamp":"fixed"}\n';
+    const malformed = '{"type":"message"';
+    await writeFile(path, safe + malformed);
+    const store = new JsonlSessionStore(path);
+    const appended = await store.append({ type: "event", value: "recovered" });
+    assert.equal(appended.sequence, 2);
+    assert.equal(store.lastRecovery.type, "quarantined-malformed-tail");
+    assert.equal(await readFile(store.lastRecovery.quarantinePath, "utf8"), malformed);
+    assert.deepEqual((await store.replay()).map(event => event.type), ["message", "event"]);
+    assert.equal((await readdir(dir)).filter(name => name.endsWith(".crash-tail")).length, 1);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("JSONL append terminates a complete unterminated envelope without data loss", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "sandora-session-terminate-"));
+  try {
+    const path = join(dir, "session.jsonl");
+    await writeFile(path, '{"schemaVersion":1,"type":"event","sequence":4,"timestamp":"fixed"}');
+    const store = new JsonlSessionStore(path);
+    const appended = await store.append({ type: "event", value: "next" });
+    assert.equal(appended.sequence, 5);
+    assert.equal(store.lastRecovery.type, "terminated-complete-tail");
+    assert.equal((await store.replay()).length, 2);
+  } finally { await rm(dir, { recursive: true, force: true }); }
 });

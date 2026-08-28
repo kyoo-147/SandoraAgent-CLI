@@ -49,6 +49,8 @@ function ensureAssistant(state) {
 export function reduceAgentEvent(state, event) {
   if (!event || typeof event.type !== "string") return state;
   switch (event.type) {
+    case "run.start":
+      return { ...state, streaming: true, status: "THINKING", error: "", abortRequested: false, activity: "Opening model stream" };
     case "agent.start":
       return { ...state, status: "THINKING", activity: "Reasoning about your question", error: "" };
     case "agent.end":

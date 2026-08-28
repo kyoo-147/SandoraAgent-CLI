@@ -45,9 +45,14 @@ test("shell filters credentials and caps output", async () => {
   assert.throws(() => assertSafeShellCommand("cd ../outside"), /safety policy/);
   assert.throws(() => assertSafeShellCommand("C:\\Windows\\System32\\cmd.exe"), /safety policy/);
   assert.equal(assertSafeShellCommand("npm test"), "npm test");
+  assert.throws(() => parseSafeDevelopmentCommand("npm test"), /SANDORA_ALLOW_PACKAGE_SCRIPTS/);
+  assert.throws(() => parseSafeDevelopmentCommand("npm exec --yes cowsay"), /not available/);
+  const previousPackageAuthority = process.env.SANDORA_ALLOW_PACKAGE_SCRIPTS;
+  process.env.SANDORA_ALLOW_PACKAGE_SCRIPTS = "1";
   assert.deepEqual(parseSafeDevelopmentCommand('npm run "test suite"'), { executable: "npm", args: ["run", "test suite"] });
-  for (const command of ["curl https://example.com", "npm test && whoami", "node -e process.exit()", "node %USERPROFILE%/secret.js", "node $HOME/secret.js", "node ../outside.js", "node C:\\outside.js"]) {
-    assert.throws(() => parseSafeDevelopmentCommand(command), /allowlist|composition|Inline|workspace-relative|safety policy/);
+  if (previousPackageAuthority === undefined) delete process.env.SANDORA_ALLOW_PACKAGE_SCRIPTS; else process.env.SANDORA_ALLOW_PACKAGE_SCRIPTS = previousPackageAuthority;
+  for (const command of ["curl https://example.com", "npm test && whoami", "node -e process.exit()", "node %USERPROFILE%/secret.js", "node $HOME/secret.js", "node ../outside.js", "node C:\\outside.js", "python -m pip install bad"]) {
+    assert.throws(() => parseSafeDevelopmentCommand(command), /allowlist|composition|Inline|workspace-relative|safety policy|Package|Python/);
   }
   const capped = await runBounded(process.execPath, ["-e", "process.stdout.write('x'.repeat(25000))"], { cwd: root });
   assert.match(capped.content[0].text, /output truncated/);

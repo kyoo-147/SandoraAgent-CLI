@@ -104,6 +104,8 @@ Every output envelope includes `protocol: "sandora-jsonl"`, `version: 1`, a mono
 
 Sandora is designed to work autonomously inside the selected workspace. Workspace tools enforce path and symlink checks, child processes receive a filtered environment, and `workspace_shell` runs one allowlisted development command directly without shell composition, expansion, redirection, absolute paths, or parent traversal. Commits require a feature branch and explicit paths, and force pushes are not exposed.
 
+Package installation/execution commands such as `npm exec`, `pnpm dlx`, and package mutation are unavailable. Running repository-defined package scripts (`npm test`, `npm run …`, and equivalents) requires explicit `SANDORA_ALLOW_PACKAGE_SCRIPTS=1` authority because package manifests regain arbitrary project-code execution.
+
 Local merge and pull-request merge capabilities are disabled by default. Grant them explicitly with `SANDORA_ALLOW_LOCAL_MERGE=1` or `SANDORA_ALLOW_PR_MERGE=1`. PR merge also requires a non-draft mergeable PR with successful checks; allowing a PR with no checks additionally requires `SANDORA_ALLOW_UNCHECKED_PR_MERGE=1`.
 
 Browser navigation pins the requested origin and refuses cross-origin redirects, links, observations, and tab switches by default. Grant an intentional cross-origin transition with `SANDORA_ALLOW_BROWSER_CROSS_ORIGIN=1`; consequential submit/send/delete/pay actions separately require `SANDORA_ALLOW_BROWSER_SUBMIT=1`.

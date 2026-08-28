@@ -73,16 +73,31 @@ export async function runBounded(command, args, { cwd, signal, timeoutMs = LIMIT
   if (signal?.aborted) return textResult("aborted before start", { aborted: true, timedOut: false });
   return new Promise((resolvePromise) => {
     const child = spawn(command, args, { cwd: root, env: filteredEnvironment(), stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
-    let text = "", reason = "", settled = false;
+    let text = "", reason = "", settled = false, hardTimer = null;
     const append = (chunk) => { text = `${text}${chunk}`; if (text.length > LIMITS.maxOutputBytes) text = `${text.slice(0, LIMITS.maxOutputBytes)}\n[output truncated]`; };
-    const finish = (value) => { if (!settled) { settled = true; clearTimeout(timer); signal?.removeEventListener("abort", abort); resolvePromise(value); } };
-    const stop = () => { if (process.platform === "win32") spawn("taskkill", ["/pid", String(child.pid), "/t", "/f"], { stdio: "ignore", windowsHide: true }); else child.kill("SIGTERM"); };
-    const abort = () => { reason = "aborted"; stop(); };
-    const timer = setTimeout(() => { reason = `timed out after ${timeoutMs}ms`; stop(); }, timeoutMs);
+    const finish = (value) => { if (!settled) { settled = true; clearTimeout(timer); clearTimeout(hardTimer); signal?.removeEventListener("abort", abort); resolvePromise(value); } };
+    const stop = () => {
+      if (hardTimer) return;
+      if (process.platform === "win32") {
+        const killer = spawn("taskkill", ["/pid", String(child.pid), "/t", "/f"], { stdio: "ignore", windowsHide: true });
+        killer.on("error", error => append(`\nprocess-tree cleanup failed to start: ${error.message}`));
+        killer.on("close", code => { if (code !== 0) append(`\nprocess-tree cleanup exited ${code}`); });
+      } else {
+        child.kill("SIGTERM");
+        const force = setTimeout(() => { if (child.exitCode === null) child.kill("SIGKILL"); }, 1_000); force.unref?.();
+      }
+      hardTimer = setTimeout(() => {
+        child.stdout.destroy(); child.stderr.destroy(); child.unref();
+        finish(textResult(`${reason}; cleanup could not be verified within 3000ms\n${text.trim()}`, { code: null, aborted: reason === "aborted", timedOut: reason.startsWith("timed out"), cleanupVerified: false }));
+      }, 3_000);
+      hardTimer.unref?.();
+    };
+    const abort = () => { if (!reason) { reason = "aborted"; stop(); } };
+    const timer = setTimeout(() => { if (!reason) { reason = `timed out after ${timeoutMs}ms`; stop(); } }, timeoutMs);
     signal?.addEventListener("abort", abort, { once: true });
     child.stdout.on("data", append); child.stderr.on("data", append);
     child.on("error", (error) => finish(textResult(`${reason || "failed to start"}: ${error.message}`)));
-    child.on("close", (code) => finish(textResult(`${reason ? `${reason}; ` : ""}exit ${code ?? "unknown"}\n${text.trim()}`, { code, aborted: reason === "aborted", timedOut: reason.startsWith("timed out") })));
+    child.on("close", (code) => finish(textResult(`${reason ? `${reason}; ` : ""}exit ${code ?? "unknown"}\n${text.trim()}`, { code, aborted: reason === "aborted", timedOut: reason.startsWith("timed out"), cleanupVerified: reason ? true : undefined })));
   });
 }
 export function filteredEnvironment(env = process.env) {
@@ -131,6 +146,13 @@ export function parseSafeDevelopmentCommand(command) {
     if (dangerousInterpreterFlag.test(arg)) throw new Error("Inline interpreter execution is not available");
     if (win32.isAbsolute(arg) || posix.isAbsolute(arg) || /(^|[\\/])\.\.([\\/]|$)/.test(arg)) throw new Error("Command arguments must remain workspace-relative");
   }
+  const executableName = executable.toLowerCase().replace(/\.cmd$|\.exe$/g, "");
+  if (["npm", "pnpm", "yarn", "bun"].includes(executableName)) {
+    const subcommand = (args.find(arg => !arg.startsWith("-")) || "").toLowerCase();
+    if (["exec", "x", "dlx", "install", "add", "remove", "update", "publish"].includes(subcommand)) throw new Error("Package execution, installation, and mutation commands are not available");
+    if (["test", "run", "run-script"].includes(subcommand) && process.env.SANDORA_ALLOW_PACKAGE_SCRIPTS !== "1") throw new Error("Package scripts require SANDORA_ALLOW_PACKAGE_SCRIPTS=1 explicit authority");
+  }
+  if (["python", "python3"].includes(executableName) && args.some(arg => arg === "-m" || arg.startsWith("-m="))) throw new Error("Python module execution is not available");
   return { executable, args };
 }
 

@@ -44,3 +44,10 @@ test("tool lifecycle exposes concise task-specific activity states", () => {
   assert.equal(reduceAgentEvent(createInitialState(), { type: "tool.start", name: "workspace_shell", args: { command: "npm test" } }).status, "TESTING");
   assert.match(reduceAgentEvent(createInitialState(), { type: "tool.end", name: "workspace_shell", isError: true }).activity, /Diagnosing/);
 });
+
+test("shared run lifecycle starts and settles renderer state", () => {
+  const started = reduceAgentEvent(createInitialState(), { type: "run.start" });
+  assert.equal(started.streaming, true);
+  assert.equal(started.status, "THINKING");
+  assert.equal(reduceAgentEvent(started, { type: "run.complete" }).streaming, false);
+});

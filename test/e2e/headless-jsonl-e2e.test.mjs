@@ -65,6 +65,9 @@ test("headless JSONL streams normalized events and a correlated final response",
     assert.equal(response.result.status, "completed");
     assert.match(response.result.text, /HEADLESS_OK/);
     assert.ok(client.messages.some(message => message.kind === "event" && message.requestId === "prompt-1" && message.event.type === "text.delta"));
+    const runEvents = client.messages.filter(message => message.kind === "event" && message.requestId === "prompt-1").map(message => message.event.type);
+    assert.equal(runEvents[0], "run.start");
+    assert.equal(runEvents.at(-1), "run.complete");
     assert.ok(client.messages.some(message => message.kind === "response" && message.requestId === "status-1" && message.result.runtime === "native"));
     client.send({ id: "status-1", type: "status" });
     await waitFor(() => client.messages.filter(message => message.requestId === "status-1").length === 2, "duplicate id response missing");
