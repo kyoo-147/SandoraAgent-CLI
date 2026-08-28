@@ -98,7 +98,7 @@ function takeUtf8Prefix(value, maxBytes) {
 function throwIfAborted(signal) { if (signal?.aborted) throw signal.reason || new Error("Operation aborted"); }
 function sleep(ms) { return new Promise((resolveSleep) => setTimeout(resolveSleep, ms)); }
 
-export async function runTurn({ provider, messages = [], tools = [], executeTool, onMessage, onPartial, onModelRequestRequested, onModelRequestStarted, onAssistantStarted, onAssistantDelta, onUsage, onToolRequested, onModelRequestCompleted, onModelRequestFailed, maxSteps = 8, maxRetries = 2, signal, bus = new EventBus(), retryDelayMs = 0 } = {}) {
+export async function runTurn({ provider, messages = [], tools = [], executeTool, onMessage, onPartial, prepareMessages, onModelRequestRequested, onModelRequestStarted, onAssistantStarted, onAssistantDelta, onUsage, onToolRequested, onModelRequestCompleted, onModelRequestFailed, maxSteps = 8, maxRetries = 2, signal, bus = new EventBus(), retryDelayMs = 0 } = {}) {
   assertProvider(provider);
   if (!Array.isArray(messages)) throw new TypeError("messages must be an array");
   const usage = { input: 0, output: 0, cacheRead: 0 };
@@ -109,6 +109,8 @@ export async function runTurn({ provider, messages = [], tools = [], executeTool
     let activeRequestId;
     let activeAssistantMessageId;
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      throwIfAborted(signal);
+      await prepareMessages?.({ messages, step, attempt });
       throwIfAborted(signal);
       text = []; calls = new Map();
       let receivedDelta = false;

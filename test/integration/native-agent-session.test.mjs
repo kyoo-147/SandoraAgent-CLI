@@ -70,6 +70,8 @@ test("native restart rejects model or system-prompt identity drift", async () =>
     const initial = await createAgentSession({ cwd: root, sessionPath, provider: provider("model-a"), registry: new NativeToolRegistry(), systemPrompt: "SYSTEM-A" }); initial.dispose();
     await assert.rejects(() => createAgentSession({ cwd: root, sessionPath, provider: provider("model-b"), registry: new NativeToolRegistry(), systemPrompt: "SYSTEM-A" }), /identity does not match/);
     await assert.rejects(() => createAgentSession({ cwd: root, sessionPath, provider: provider("model-a"), registry: new NativeToolRegistry(), systemPrompt: "SYSTEM-B" }), /identity does not match/);
+    const configured = await createAgentSession({ cwd: root, sessionPath, provider: provider("model-a"), registry: new NativeToolRegistry(), systemPrompt: "SYSTEM-A", maxContextBytes: 1000, contextReserveBytes: 100 }); configured.dispose();
+    await assert.rejects(() => createAgentSession({ cwd: root, sessionPath, provider: provider("model-a"), registry: new NativeToolRegistry(), systemPrompt: "SYSTEM-A", maxContextBytes: 2000, contextReserveBytes: 100 }), /identity does not match/);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
@@ -296,5 +298,26 @@ test("native restart classifies incomplete lifecycle boundaries exactly once", a
     assert.equal(durable.filter(event => event.type === "tool.call.unknown" && event.payload.toolCallId === "tool-open").length, 1);
     assert.equal(durable.filter(event => event.type === "tool.call.unknown" && event.payload.toolCallId === "tool-intent").length, 1);
     assert.equal(durable.filter(event => event.type === "assistant.message.interrupted" && event.payload.assistantMessageId === "assistant-open").length, 1);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("native context compaction is durable and restart-equivalent", async () => {
+  const root = await mkdtemp(join(tmpdir(), "sandora-native-compaction-"));
+  const sessionPath = join(root, "session.jsonl"); const requests = [];
+  const provider = { model: "fixture", async *stream({ messages }) { requests.push(JSON.stringify(messages)); yield { type: "text_delta", delta: "ok" }; } };
+  try {
+    const session = await createAgentSession({ cwd: root, sessionPath, provider, registry: new NativeToolRegistry(), systemPrompt: "system", maxContextBytes: 300 });
+    await session.prompt("a".repeat(200)); await session.prompt("b".repeat(200));
+    assert.ok(session.getDisplayMessages().some(message => message.text.includes("a".repeat(100))), "full audit/display history must survive model-context compaction");
+    session.dispose();
+    const durable = await new JsonlSessionStore(sessionPath).replay();
+    const compacted = durable.find(event => event.type === "context.compacted");
+    assert.ok(compacted); assert.equal(compacted.payload.algorithm, "native-context/v1");
+    assert.equal(compacted.payload.sourceMessageCount, compacted.payload.before.messages);
+    assert.match(compacted.payload.contextSha256, /^[a-f0-9]{64}$/);
+    assert.ok(durable.indexOf(compacted) < durable.findIndex((event, index) => index > durable.indexOf(compacted) && event.type === "model.request.requested"), "compaction must be durable before provider intent");
+    const restarted = await createAgentSession({ cwd: root, sessionPath, provider, registry: new NativeToolRegistry(), systemPrompt: "system", maxContextBytes: 300 });
+    await restarted.prompt("c"); restarted.dispose();
+    assert.doesNotMatch(requests[2], /a{100}/, "restart must not resurrect dropped context");
   } finally { await rm(root, { recursive: true, force: true }); }
 });

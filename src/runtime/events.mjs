@@ -5,7 +5,7 @@ export const EVENT_SCHEMA_VERSION = 1;
 export const EVENT_TYPES = new Set([
   "session.created", "session.resumed", "session.closed", "turn.requested", "turn.started", "turn.completed", "turn.failed", "turn.cancel.requested", "turn.cancelled",
   "user.message.accepted", "model.request.requested", "model.request.started", "model.request.completed", "model.request.failed", "model.request.unknown", "model.usage",
-  "assistant.message.started", "assistant.delta", "assistant.message.completed", "assistant.message.interrupted",
+  "assistant.message.started", "assistant.delta", "assistant.message.completed", "assistant.message.interrupted", "context.compacted",
   "tool.call.requested", "tool.call.started", "tool.call.completed", "tool.call.failed", "tool.call.cancelled", "tool.call.unknown", "tool.result.recorded",
   "recovery.tool_result_synthesized", "runtime.unknown",
 ]);

@@ -4,6 +4,7 @@ import { EventBus, JsonlSessionStore, OpenAICompatibleProvider, runTurn } from "
 import { NativeToolRegistry, openAiTools, toolText } from "../tools/registry.mjs";
 import { createDelegateSubagentsTool } from "../agents/subagents.mjs";
 import { assertAgentSession, normalizeDisplayMessages } from "./agent-session.mjs";
+import { compactContext, measureContext, validateCompactionProvenance } from "./context-budget.mjs";
 import { ToolReceiptStore } from "../tools/receipts.mjs";
 import { boundedAuditValue } from "./events.mjs";
 
@@ -48,6 +49,28 @@ async function repairIncompleteLifecycle(store, events) {
   }
 }
 
+function withMessageId(message, messageId) { Object.defineProperty(message, "messageId", { value: messageId, enumerable: false, configurable: true }); return message; }
+function hydrateHistory(events) {
+  return events.filter(event => ["user.message.accepted", "assistant.message.completed", "tool.result.recorded"].includes(event.type) && event.payload?.message).map(event => withMessageId({ ...event.payload.message }, event.id));
+}
+
+function hydrateContext(events, systemPrompt) {
+  const system = withMessageId({ role: "system", content: systemPrompt }, "system-prompt");
+  let active = [];
+  const compactionIds = new Set();
+  for (const event of events) {
+    if (["user.message.accepted", "assistant.message.completed", "tool.result.recorded"].includes(event.type) && event.payload?.message) active.push(withMessageId({ ...event.payload.message }, event.id));
+    if (event.type === "context.compacted") {
+      if (!event.payload.compactionId || compactionIds.has(event.payload.compactionId)) throw new Error("duplicate context compaction ID");
+      compactionIds.add(event.payload.compactionId);
+      const retained = validateCompactionProvenance(event.payload, [system, ...active]);
+      if (event.payload.after?.messages !== retained.length || event.payload.before?.messages < retained.length) throw new Error("invalid context compaction counts");
+      active = retained.filter(message => message.role !== "system");
+    }
+  }
+  return active;
+}
+
 async function repairIncompleteToolTranscript(store, events) {
   const messages = events.filter(event => ["user.message.accepted", "assistant.message.completed", "tool.result.recorded"].includes(event.type)).map(event => event.payload?.message).filter(Boolean);
   const pending = new Map();
@@ -71,23 +94,33 @@ export async function createAgentSession({
   registry = new NativeToolRegistry(),
   systemPrompt = "You are Sandora Agent.",
   maxSteps = 12,
+  maxContextBytes,
+  contextReserveBytes = 0,
 } = {}) {
+  if (maxContextBytes !== undefined && (!Number.isSafeInteger(maxContextBytes) || maxContextBytes <= 0)) throw new TypeError("maxContextBytes must be a positive integer");
+  if (!Number.isSafeInteger(contextReserveBytes) || contextReserveBytes < 0 || (maxContextBytes !== undefined && contextReserveBytes >= maxContextBytes)) throw new TypeError("contextReserveBytes must be a non-negative integer below maxContextBytes");
   const store = new JsonlSessionStore(sessionPath);
   const bus = new EventBus();
   const events = await store.replay();
   if (events.some(event => event.type === "session.closed")) throw new Error("Native session is closed");
   await repairIncompleteLifecycle(store, events);
-  const resumed = await repairIncompleteToolTranscript(store, events);
+  await repairIncompleteToolTranscript(store, events);
+  const hydratedEvents = await store.replay();
   const existingSession = events.find(event => event.type === "session.created");
   const modelId = provider.model || "custom";
   const systemPromptSha256 = createHash("sha256").update(systemPrompt).digest("hex");
   const persistedPromptSha256 = existingSession?.payload?.systemPromptSha256;
   const persistedModel = existingSession?.payload?.model;
-  if (existingSession && ((persistedPromptSha256 !== undefined && persistedPromptSha256 !== systemPromptSha256) || (persistedModel !== undefined && persistedModel !== modelId))) throw new Error("native session identity does not match persisted session");
+  const persistedContextConfig = events.findLast(event => ["session.created", "session.resumed"].includes(event.type) && event.payload?.maxContextBytes !== undefined);
+  const persistedMaxContextBytes = persistedContextConfig?.payload?.maxContextBytes;
+  const persistedContextReserveBytes = persistedContextConfig?.payload?.contextReserveBytes;
+  if (existingSession && ((persistedPromptSha256 !== undefined && persistedPromptSha256 !== systemPromptSha256) || (persistedModel !== undefined && persistedModel !== modelId) || (persistedMaxContextBytes !== undefined && persistedMaxContextBytes !== maxContextBytes) || (persistedMaxContextBytes !== undefined && persistedContextReserveBytes !== contextReserveBytes))) throw new Error("native session identity does not match persisted session");
   const sessionId = existingSession?.payload?.sessionId || randomUUID();
   const receipts = new ToolReceiptStore({ cwd, sessionId, runtime: "native" });
-  await store.append({ type: existingSession ? "session.resumed" : "session.created", sessionId, runtime: "sandora-native", model: modelId, systemPromptSha256 });
-  const messages = [{ role: "system", content: systemPrompt }, ...resumed.filter(message => message?.role !== "system")];
+  await store.append({ type: existingSession ? "session.resumed" : "session.created", sessionId, runtime: "sandora-native", model: modelId, systemPromptSha256, ...(maxContextBytes === undefined ? {} : { maxContextBytes, contextReserveBytes }) });
+  const modelSystem = withMessageId({ role: "system", content: systemPrompt }, "system-prompt");
+  const messages = [modelSystem, ...hydrateContext(hydratedEvents, systemPrompt)];
+  const historyMessages = [withMessageId({ role: "system", content: systemPrompt }, "system-prompt"), ...hydrateHistory(hydratedEvents)];
   if (!registry.has("delegate_subagents")) registry.register(createDelegateSubagentsTool({ provider, cwd }));
   let active;
   let closed = false;
@@ -97,9 +130,9 @@ export async function createAgentSession({
     sessionId,
     thinkingLevel: undefined,
     model: { id: modelId },
-    getContextUsage: () => ({ tokens: Math.ceil(JSON.stringify(messages).length / 4) }),
-    getLastAssistantText: () => messages.findLast(message => message?.role === "assistant")?.content,
-    getDisplayMessages: () => normalizeDisplayMessages(messages),
+    getContextUsage: () => measureContext(messages),
+    getLastAssistantText: () => historyMessages.findLast(message => message?.role === "assistant")?.content,
+    getDisplayMessages: () => normalizeDisplayMessages(historyMessages),
     subscribe(listener) {
       const unsubs = [
         bus.on("agent", listener),
@@ -121,8 +154,8 @@ export async function createAgentSession({
       const userMessage = { role: "user", content: text };
       await store.append({ type: "turn.requested", sessionId, turnId });
       await store.append({ type: "turn.started", sessionId, turnId });
-      await store.append({ type: "user.message.accepted", sessionId, turnId, message: userMessage });
-      messages.push(userMessage);
+      const userEvent = await store.append({ type: "user.message.accepted", sessionId, turnId, message: userMessage });
+      withMessageId(userMessage, userEvent.id); messages.push(userMessage); historyMessages.push(userMessage);
       bus.emit("agent", { type: "agent.start" });
       bus.emit("agent", { type: "message.start", role: "assistant" });
       try {
@@ -133,6 +166,15 @@ export async function createAgentSession({
           maxSteps,
           signal: controller.signal,
           bus,
+          prepareMessages: maxContextBytes === undefined ? undefined : async ({ messages: requestMessages, step, attempt }) => {
+            if (measureContext(requestMessages).bytes + contextReserveBytes <= maxContextBytes) return;
+            const sourceMessageIds = requestMessages.map(message => message.messageId);
+            if (sourceMessageIds.some(id => typeof id !== "string")) throw new Error("context compaction requires durable message IDs");
+            const compacted = compactContext(requestMessages, { maxBytes: maxContextBytes, reserveBytes: contextReserveBytes });
+            if (compacted.retainedMessageIds.length > 200) throw new Error("context compaction retained provenance exceeds the bounded message-ID limit");
+            await store.append({ type: "context.compacted", sessionId, turnId, compactionId: randomUUID(), algorithm: compacted.algorithm, reason: "budget", step, attempt, before: compacted.before, after: compacted.after, sourceMessageCount: sourceMessageIds.length, sourceEventRange: { first: sourceMessageIds[0], last: sourceMessageIds.at(-1) }, droppedMessageCount: compacted.droppedMessageIds.length, retainedMessageIds: compacted.retainedMessageIds, contextSha256: compacted.contextSha256 });
+            requestMessages.splice(0, requestMessages.length, ...compacted.messages);
+          },
           onModelRequestRequested: ({ requestId, step, attempt }) => store.append({ type: "model.request.requested", correlationId: requestId, sessionId, turnId, requestId, step, attempt, model: provider.model || "custom" }),
           onModelRequestStarted: ({ requestId, step, attempt }) => store.append({ type: "model.request.started", correlationId: requestId, sessionId, turnId, requestId, step, attempt, model: provider.model || "custom" }),
           onModelRequestCompleted: ({ requestId, step, attempt }) => store.append({ type: "model.request.completed", correlationId: requestId, sessionId, turnId, requestId, step, attempt }),
@@ -141,7 +183,7 @@ export async function createAgentSession({
           onAssistantDelta: ({ requestId, assistantMessageId, delta, deltaIndex }) => store.append({ type: "assistant.delta", correlationId: assistantMessageId, sessionId, turnId, requestId, assistantMessageId, delta, deltaIndex }),
           onUsage: ({ requestId, usageId, usage }) => store.append({ type: "model.usage", correlationId: requestId, sessionId, turnId, requestId, usageId, usage: { input: usage?.prompt_tokens || 0, output: usage?.completion_tokens || 0, cacheRead: usage?.prompt_tokens_details?.cached_tokens || 0 } }),
           onToolRequested: ({ requestId, assistantMessageId, step, toolCallId, name }) => store.append({ type: "tool.call.requested", correlationId: toolCallId, sessionId, turnId, requestId, assistantMessageId, toolCallId, name, step }),
-          onMessage: (message, metadata) => store.append({ type: message.role === "assistant" ? "assistant.message.completed" : "tool.result.recorded", correlationId: message.role === "assistant" ? metadata.assistantMessageId : metadata.toolCallId, sessionId, turnId, requestId: metadata.requestId, assistantMessageId: metadata.assistantMessageId, message }),
+          onMessage: async (message, metadata) => { const event = await store.append({ type: message.role === "assistant" ? "assistant.message.completed" : "tool.result.recorded", correlationId: message.role === "assistant" ? metadata.assistantMessageId : metadata.toolCallId, sessionId, turnId, requestId: metadata.requestId, assistantMessageId: metadata.assistantMessageId, message }); withMessageId(message, event.id); historyMessages.push(message); },
           onPartial: (message, metadata) => { const originalBytes = Buffer.byteLength(message.content); const content = boundedAuditValue(message.content, 20_000); return store.append({ type: "assistant.message.interrupted", correlationId: metadata.assistantMessageId, sessionId, turnId, requestId: metadata.requestId, assistantMessageId: metadata.assistantMessageId, status: "INTERRUPTED", content, contentBytes: Buffer.byteLength(content), truncated: originalBytes > Buffer.byteLength(content) }); },
           executeTool: async (name, args, context) => {
             const toolExecutionId = randomUUID();

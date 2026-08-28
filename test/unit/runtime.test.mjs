@@ -42,6 +42,7 @@ test("OpenAI-compatible provider flushes a final SSE row without a trailing newl
 
 test("turn loop executes tools, emits events, and retries stream failures", async () => {
   let attempts = 0;
+  const prepared = [];
   const bus = new EventBus();
   const seen = [];
   bus.on("text_delta", (event) => seen.push(event.delta));
@@ -54,8 +55,9 @@ test("turn loop executes tools, emits events, and retries stream failures", asyn
       yield { type: "finish", reason: "tool_calls" };
     }
   }};
-  const result = await runTurn({ provider, messages: [{ role: "user", content: "go" }], executeTool: async (name, args) => `${name}:${args.value}`, bus, maxRetries: 1 });
+  const result = await runTurn({ provider, messages: [{ role: "user", content: "go" }], executeTool: async (name, args) => `${name}:${args.value}`, prepareMessages: async ({ step, attempt }) => prepared.push([step, attempt]), bus, maxRetries: 1 });
   assert.equal(attempts, 3);
+  assert.deepEqual(prepared, [[0, 0], [0, 1], [1, 0]]);
   assert.equal(result.message.content, "done");
   assert.deepEqual(seen, ["done"]);
   assert.equal(result.messages.at(-1).role, "assistant");
