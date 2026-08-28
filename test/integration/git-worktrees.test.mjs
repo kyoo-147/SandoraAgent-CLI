@@ -5,14 +5,14 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
-import GitWorktreeManager from "../src/git-worktrees.mjs";
+import GitWorktreeManager from "../../src/git/worktrees.mjs";
 
 const execFile = promisify(execFileCallback);
 async function git(cwd, ...args) { return execFile("git", args, { cwd, encoding: "utf8" }); }
 
 async function fixture() {
   const root = await mkdtemp(resolve(tmpdir(), "sandora-git-e2e-"));
-  await git(root, "init", "-q");
+  await git(root, "init", "-q", "-b", "integration/test");
   await git(root, "config", "user.email", "test@sandora.local");
   await git(root, "config", "user.name", "Sandora Test");
   await writeFile(resolve(root, "README.md"), "base\n");

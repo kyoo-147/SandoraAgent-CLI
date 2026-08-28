@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { appendFile, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { EventBus, JsonlSessionStore, OpenAICompatibleProvider, runTurn } from "../src/runtime.mjs";
+import { EventBus, JsonlSessionStore, OpenAICompatibleProvider, runTurn } from "../../src/runtime/turn-runtime.mjs";
 
 function sse(...events) {
   const body = events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join("") + "data: [DONE]\n\n";

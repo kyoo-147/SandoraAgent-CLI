@@ -3,16 +3,18 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "engines": { "node": ">=22.19.0" },
   "description": "Sandora autonomous coding and research agent",
   "scripts": {
     "start": "node start.mjs",
     "chat": "node start.mjs",
-    "check": "node --check start.mjs && node --check src/subagents.mjs && node --check src/worker-tools.mjs && node --check src/agent-manager.mjs && node --check src/runtime.mjs && node --check src/tool-registry.mjs && node --check src/native-agent-session.mjs && node --check src/plugin-host.mjs && node --check src/browser-tools.mjs && node --check src/agent-session.mjs && node --check src/event-reducer.mjs",
+    "check": "node --check start.mjs && node --check src/cli/terminal-app.mjs && node --check src/runtime/agent-session.mjs && node --check src/runtime/create-session.mjs && node --check src/runtime/pi-agent-session.mjs && node --check src/runtime/event-reducer.mjs && node --check src/runtime/native-agent-session.mjs && node --check src/runtime/turn-runtime.mjs && node --check src/tools/registry.mjs && node --check src/tools/coding-tools.mjs && node --check src/agents/manager.mjs && node --check src/agents/pi-subagents.mjs && node --check src/agents/pi-writable-workers.mjs && node --check src/agents/subagents.mjs && node --check src/agents/worker-tools.mjs && node --check src/plugins/host.mjs && node --check src/git/tools.mjs && node --check src/git/worktrees.mjs && node --check src/browser/tools.mjs",
     "test": "node --test",
     "qa": "node scripts/qa.mjs",
     "qa:deps": "npm audit --omit=dev --audit-level=high"
   },
   "dependencies": {
+    "@earendil-works/pi-coding-agent": "0.84.3",
     "pngjs": "^7.0.0",
     "typebox": "^1.3.19"
   }

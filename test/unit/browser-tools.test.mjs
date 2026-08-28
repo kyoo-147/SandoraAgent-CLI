@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import { browserTools, resolveBrowserArtifactPath } from "../src/browser-tools.mjs";
+import { browserTools, resolveBrowserArtifactPath } from "../../src/browser/tools.mjs";
 
 test("browser and computer contracts are registered", () => {
   const names = browserTools.map(tool => tool.name);
@@ -31,4 +31,10 @@ test("browser artifact paths stay inside the runtime workspace", async () => {
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("browser endpoint policy rejects remote CDP without explicit authority", async () => {
+  const connect = browserTools.find(candidate => candidate.name === "browser_connect");
+  await assert.rejects(() => connect.execute("test", { endpoint: "https://example.com:9222" }), /SANDORA_ALLOW_REMOTE_CDP/);
+  await assert.rejects(() => connect.execute("test", { endpoint: "file:///tmp/cdp" }), /HTTP or HTTPS/);
 });

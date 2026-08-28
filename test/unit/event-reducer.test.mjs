@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createInitialState, reduceAgentEvent, cleanupOutput } from "../src/event-reducer.mjs";
+import { createInitialState, reduceAgentEvent, cleanupOutput } from "../../src/runtime/event-reducer.mjs";
 
 test("normalizes streamed output into one assistant message and accumulates usage", () => {
   let state = createInitialState();
@@ -27,4 +27,20 @@ test("abort stops activity and removes an empty partial output", () => {
 test("cleanupOutput never discards a non-empty response", () => {
   const state = { ...createInitialState(), messages: [{ role: "assistant", text: "partial" }] };
   assert.equal(cleanupOutput(state).messages[0].text, "partial");
+});
+
+test("tool lifecycle exposes concise task-specific activity states", () => {
+  const cases = [
+    ["workspace_read", "READING"],
+    ["workspace_search", "SEARCHING"],
+    ["workspace_edit", "EDITING"],
+    ["delegate_subagents", "SUBAGENTS"],
+    ["git_commit", "COMMITTING"],
+    ["git_push", "PUSHING"],
+    ["browser_observe", "BROWSER"],
+    ["workspace_shell", "RUNNING"],
+  ];
+  for (const [name, expected] of cases) assert.equal(reduceAgentEvent(createInitialState(), { type: "tool.start", name }).status, expected);
+  assert.equal(reduceAgentEvent(createInitialState(), { type: "tool.start", name: "workspace_shell", args: { command: "npm test" } }).status, "TESTING");
+  assert.match(reduceAgentEvent(createInitialState(), { type: "tool.end", name: "workspace_shell", isError: true }).activity, /Diagnosing/);
 });

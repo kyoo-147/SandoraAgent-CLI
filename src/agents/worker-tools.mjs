@@ -1,4 +1,4 @@
-import { createCodingTools } from "./coding-tools.mjs";
+import { createCodingTools } from "../tools/coding-tools.mjs";
 
 export const READ_ONLY_WORKER_TOOL_NAMES = ["workspace_read", "workspace_search", "workspace_list"];
 

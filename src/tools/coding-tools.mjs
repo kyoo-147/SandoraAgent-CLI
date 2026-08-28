@@ -1,8 +1,8 @@
 import process from "node:process";
 import { spawn } from "node:child_process";
-import { mkdir, readdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, realpath, stat, unlink, writeFile } from "node:fs/promises";
 import { dirname, relative, resolve, sep } from "node:path";
-import { defineTool } from "./tool-registry.mjs";
+import { defineTool } from "./registry.mjs";
 import { Type } from "typebox";
 
 export const LIMITS = Object.freeze({ maxFileBytes: 2_000_000, maxOutputBytes: 20_000, maxMatches: 200, maxFiles: 500, timeoutMs: 30_000 });
@@ -22,7 +22,15 @@ export async function workspaceRoot(cwd) {
   if (!info.isDirectory()) throw new Error("Workspace is not a directory");
   return root;
 }
-async function safePath(cwd, value, { create = false } = {}) {
+export async function workspaceRelativePath(cwd, value) {
+  const root = await workspaceRoot(cwd);
+  const candidate = resolve(root, value || ".");
+  isInside(root, candidate);
+  const path = relative(root, candidate);
+  if (!path) throw new Error("A workspace-relative path is required");
+  return path;
+}
+export async function safePath(cwd, value, { create = false } = {}) {
   const root = await workspaceRoot(cwd);
   const candidate = resolve(root, value || ".");
   isInside(root, candidate);
@@ -81,6 +89,23 @@ export function filteredEnvironment(env = process.env) {
   const allowed = new Set(["path", "pathext", "systemroot", "windir", "home", "userprofile", "appdata", "localappdata", "temp", "tmp", "lang", "lc_all", "pi_offline"]);
   return Object.fromEntries(Object.entries(env).filter(([key]) => allowed.has(key.toLowerCase())));
 }
+export function assertSafeShellCommand(command) {
+  if (typeof command !== "string" || !command.trim()) throw new Error("Shell command is required");
+  const normalized = command.replace(/\^\r?\n/g, " ").trim();
+  const denied = [
+    /(^|[;&|]\s*)(shutdown|reboot|halt|poweroff|format|diskpart|bcdedit|reg\s+delete)\b/i,
+    /\brm\s+-[^\r\n]*r[^\r\n]*f[^\r\n]*(\/|~)\s*($|[;&|])/i,
+    /\b(del|erase)\s+\/s\s+\/q\s+[a-z]:\\/i,
+    /\b(remove-item|rd|rmdir)\b[^\r\n]*(\/|\\)(windows|users|program files)\b/i,
+    /(^|[\s"'])\.\.(\/|\\)/,
+    /(^|[\s"'])[a-z]:\\/i,
+    /(^|[\s"'])\\\\/,
+    /\b(env|set)\s*($|[;&|])/i,
+    /get-childitem\s+env:/i,
+  ];
+  if (denied.some(pattern => pattern.test(normalized))) throw new Error("Command rejected by workspace safety policy");
+  return normalized;
+}
 
 const schemas = {
   path: Type.String(),
@@ -94,8 +119,8 @@ export function createCodingTools() {
     { name: "workspace_search", label: "Workspace search", description: "Search bounded UTF-8 workspace files.", parameters: Type.Object({ pattern: schemas.text, path: schemas.pathOptional }), execute: async (_id, p, signal, _u, ctx) => { const root = await workspaceRoot(ctx.cwd), base = await safePath(root, p.path || "."), info = await stat(base); const found = info.isFile() ? [base] : await files(root, base); const matches = []; for (const file of found) { if (signal?.aborted) throw new Error("Workspace search aborted"); try { const rows = (await readFile(file, "utf8")).split(/\r?\n/); rows.forEach((line, i) => { if (matches.length < LIMITS.maxMatches && line.toLocaleLowerCase().includes(p.pattern.toLocaleLowerCase())) matches.push(`${relative(root, file)}:${i + 1}: ${line}`); }); } catch {} } return textResult(matches.join("\n") || "No matches.", { matchCount: matches.length }); } },
     { name: "workspace_write", label: "Workspace write", description: "Create or replace a bounded text file.", parameters: Type.Object({ path: schemas.path, content: schemas.text }), execute: async (_id, p, _s, _u, ctx) => { const file = await safePath(ctx.cwd, p.path, { create: true }); if (Buffer.byteLength(p.content) > LIMITS.maxFileBytes) throw new Error("Content exceeds 2 MB"); await mkdir(dirname(file), { recursive: true }); await writeFile(file, p.content, "utf8", { flag: "w" }); return textResult(`Wrote ${relative(await workspaceRoot(ctx.cwd), file)}`, { bytes: Buffer.byteLength(p.content) }); } },
     { name: "workspace_edit", label: "Workspace edit", description: "Replace one exact text occurrence in a bounded file.", parameters: Type.Object({ path: schemas.path, oldText: schemas.text, newText: schemas.text }), execute: async (_id, p, _s, _u, ctx) => { const file = await regularFile(ctx.cwd, p.path); const before = await readFile(file, "utf8"); const count = before.split(p.oldText).length - 1; if (!p.oldText || count !== 1) throw new Error(count ? "Edit must match exactly once" : "Edit text not found"); const after = before.replace(p.oldText, p.newText); if (Buffer.byteLength(after) > LIMITS.maxFileBytes) throw new Error("Edited file exceeds 2 MB"); await writeFile(file, after, "utf8"); return textResult(`Edited ${p.path}`, { bytes: Buffer.byteLength(after) }); } },
-    { name: "workspace_shell", label: "Workspace shell", description: "Run a bounded shell command in the workspace with filtered environment.", parameters: Type.Object({ command: schemas.text, timeoutMs: Type.Optional(Type.Integer({ minimum: 1, maximum: LIMITS.timeoutMs })) }), execute: async (_id, p, signal, _u, ctx) => process.platform === "win32" ? runBounded(process.env.ComSpec || "cmd.exe", ["/d", "/s", "/c", p.command], { cwd: ctx.cwd, signal, timeoutMs: p.timeoutMs }) : runBounded("/bin/sh", ["-lc", p.command], { cwd: ctx.cwd, signal, timeoutMs: p.timeoutMs }) },
-    { name: "git_observe", label: "Git observe", description: "Observe Git state without mutation.", parameters: Type.Object({ view: Type.Optional(Type.Union([Type.Literal("status"), Type.Literal("diff"), Type.Literal("log"), Type.Literal("branches")])) }), execute: async (_id, p, signal, _u, ctx) => { const args = { status: ["status", "--short", "--branch"], diff: ["diff", "--stat"], log: ["log", "-5", "--oneline"], branches: ["branch", "--list"] }[p.view || "status"]; return runBounded("git", args, { cwd: ctx.cwd, signal }); } },
+    { name: "workspace_delete", label: "Workspace delete", description: "Delete one regular file inside the workspace. Directories are never removed.", parameters: Type.Object({ path: schemas.path }), execute: async (_id, p, _s, _u, ctx) => { const file = await regularFile(ctx.cwd, p.path); await unlink(file); return textResult(`Deleted ${relative(await workspaceRoot(ctx.cwd), file)}`); } },
+    { name: "workspace_shell", label: "Workspace shell", description: "Run a bounded development command in the workspace with a filtered environment and destructive-command guard.", parameters: Type.Object({ command: schemas.text, timeoutMs: Type.Optional(Type.Integer({ minimum: 1, maximum: LIMITS.timeoutMs })) }), execute: async (_id, p, signal, _u, ctx) => { const command = assertSafeShellCommand(p.command); return process.platform === "win32" ? runBounded(process.env.ComSpec || "cmd.exe", ["/d", "/s", "/c", command], { cwd: ctx.cwd, signal, timeoutMs: p.timeoutMs }) : runBounded("/bin/sh", ["-lc", command], { cwd: ctx.cwd, signal, timeoutMs: p.timeoutMs }); } },
   ];
 }
 export function registerCodingTools(registry) { for (const tool of createCodingTools()) registry.register(tool); return registry; }

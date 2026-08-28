@@ -17,10 +17,14 @@ if (lock.lockfileVersion !== 3) throw new Error(`unsupported lockfile version: $
 
 const checks = [
   [process.execPath, ["--check", "start.mjs"]],
-  [process.execPath, ["--check", "src/subagents.mjs"]],
-  [process.execPath, ["--check", "src/worker-tools.mjs"]],
-  [process.execPath, ["--check", "src/native-agent-session.mjs"]],
-  [process.execPath, ["--check", "src/tool-registry.mjs"]],
+  [process.execPath, ["--check", "src/cli/terminal-app.mjs"]],
+  [process.execPath, ["--check", "src/runtime/native-agent-session.mjs"]],
+  [process.execPath, ["--check", "src/runtime/pi-agent-session.mjs"]],
+  [process.execPath, ["--check", "src/runtime/create-session.mjs"]],
+  [process.execPath, ["--check", "src/tools/registry.mjs"]],
+  [process.execPath, ["--check", "src/agents/subagents.mjs"]],
+  [process.execPath, ["--check", "src/agents/pi-subagents.mjs"]],
+  [process.execPath, ["--check", "src/agents/pi-writable-workers.mjs"]],
   [process.execPath, ["--test"]],
   [process.execPath, ["scripts/cli-smoke.mjs"]],
 ];

@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { SandoraAgentManager, stableId } from "./agent-manager.mjs";
-import { EventBus, runTurn } from "./runtime.mjs";
-import { defineTool, NativeToolRegistry, openAiTools, toolText } from "./tool-registry.mjs";
+import { SandoraAgentManager, stableId } from "./manager.mjs";
+import { EventBus, runTurn } from "../runtime/turn-runtime.mjs";
+import { defineTool, NativeToolRegistry, openAiTools, toolText } from "../tools/registry.mjs";
 import registerWorkerTools from "./worker-tools.mjs";
 
-export { SandoraAgentManager, createAgentManager, stableId } from "./agent-manager.mjs";
+export { SandoraAgentManager, createAgentManager, stableId } from "./manager.mjs";
 
 const MAX_WORKERS = 4;
 const WORKER_TIMEOUT_MS = 120_000;

@@ -1,16 +1,16 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createCodingTools, filteredEnvironment, runBounded, workspaceRoot } from "../src/coding-tools.mjs";
+import { assertSafeShellCommand, createCodingTools, filteredEnvironment, runBounded, workspaceRoot } from "../../src/tools/coding-tools.mjs";
 
 const context = (cwd) => ({ cwd });
 const tool = (name) => createCodingTools().find((item) => item.name === name);
 
- test("registry exposes bounded coding and observation tools", () => {
+test("registry exposes bounded coding and observation tools", () => {
   assert.deepEqual(createCodingTools().map((item) => item.name), [
-    "workspace_list", "workspace_read", "workspace_search", "workspace_write", "workspace_edit", "workspace_shell", "git_observe",
+    "workspace_list", "workspace_read", "workspace_search", "workspace_write", "workspace_edit", "workspace_delete", "workspace_shell",
   ]);
 });
 
@@ -30,6 +30,8 @@ test("write and edit require exact bounded operations", async () => {
   await tool("workspace_edit").execute("2", { path: "nested/a.txt", oldText: "two", newText: "TWO" }, null, null, context(root));
   assert.equal((await tool("workspace_read").execute("3", { path: "nested/a.txt" }, null, null, context(root))).content[0].text, "1: one\n2: TWO\n3: ");
   await assert.rejects(() => tool("workspace_edit").execute("4", { path: "nested/a.txt", oldText: "", newText: "x" }, null, null, context(root)), /found|once/);
+  await tool("workspace_delete").execute("5", { path: "nested/a.txt" }, null, null, context(root));
+  await assert.rejects(() => readFile(join(root, "nested/a.txt")), /ENOENT/);
 });
 
 test("shell filters credentials and caps output", async () => {
@@ -40,6 +42,10 @@ test("shell filters credentials and caps output", async () => {
   const result = await tool("workspace_shell").execute("1", { command }, null, null, context(root));
   assert.match(result.content[0].text, /exit 0/);
   assert.ok(!result.content[0].text.includes("do-not-pass"));
+  assert.throws(() => assertSafeShellCommand("shutdown /s"), /safety policy/);
+  assert.throws(() => assertSafeShellCommand("cd ../outside"), /safety policy/);
+  assert.throws(() => assertSafeShellCommand("C:\\Windows\\System32\\cmd.exe"), /safety policy/);
+  assert.equal(assertSafeShellCommand("npm test"), "npm test");
   const capped = await runBounded(process.execPath, ["-e", "process.stdout.write('x'.repeat(25000))"], { cwd: root });
   assert.match(capped.content[0].text, /output truncated/);
   const timed = await runBounded(process.execPath, ["-e", "setTimeout(() => {}, 1000)"], { cwd: root, timeoutMs: 20 });

@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
-import { EventBus, JsonlSessionStore, OpenAICompatibleProvider, runTurn } from "./runtime.mjs";
-import { NativeToolRegistry, openAiTools, toolText } from "./tool-registry.mjs";
-import { createDelegateSubagentsTool } from "./subagents.mjs";
+import { EventBus, JsonlSessionStore, OpenAICompatibleProvider, runTurn } from "./turn-runtime.mjs";
+import { NativeToolRegistry, openAiTools, toolText } from "../tools/registry.mjs";
+import { createDelegateSubagentsTool } from "../agents/subagents.mjs";
 import { assertAgentSession } from "./agent-session.mjs";
 
 class OfflineProvider {
@@ -26,6 +26,7 @@ export async function createAgentSession({
   provider = providerFromEnvironment(),
   registry = new NativeToolRegistry(),
   systemPrompt = "You are Sandora Agent.",
+  maxSteps = 12,
 } = {}) {
   const store = new JsonlSessionStore(sessionPath);
   const bus = new EventBus();
@@ -38,15 +39,17 @@ export async function createAgentSession({
   if (!registry.has("delegate_subagents")) registry.register(createDelegateSubagentsTool({ provider, cwd }));
   let active;
   const session = {
+    runtime: "native",
     sessionId,
     thinkingLevel: undefined,
     model: { id: provider.model || "custom" },
     getContextUsage: () => ({ tokens: Math.ceil(JSON.stringify(messages).length / 4) }),
+    getLastAssistantText: () => messages.findLast(message => message?.role === "assistant")?.content,
     subscribe(listener) {
       const unsubs = [
         bus.on("agent", listener),
         bus.on("text_delta", event => listener({ type: "text.delta", delta: event.delta })),
-        bus.on("tool_start", event => listener({ type: "tool.start", name: event.name })),
+        bus.on("tool_start", event => listener({ type: "tool.start", name: event.name, args: event.args })),
         bus.on("tool_end", event => listener({ type: "tool.end", name: event.name })),
       ];
       return () => unsubs.forEach(unsubscribe => unsubscribe());
@@ -70,12 +73,13 @@ export async function createAgentSession({
           provider,
           messages,
           tools: openAiTools(registry),
+          maxSteps,
           signal: controller.signal,
           bus,
           executeTool: async (name, args, context) => {
             const toolExecutionId = randomUUID();
             await store.append({ type: "tool.started", sessionId, turnId, toolExecutionId, name, step: context.step });
-            bus.emit("tool_start", { name });
+            bus.emit("tool_start", { name, args });
             try {
               const output = toolText(await registry.execute(name, args, { ...context, cwd }));
               await store.append({ type: "tool.completed", sessionId, turnId, toolExecutionId, name, outputBytes: Buffer.byteLength(output) });

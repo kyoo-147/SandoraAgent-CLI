@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { delegateSubagentsTool } from "../src/subagents.mjs";
+import { delegateSubagentsTool } from "../../src/agents/subagents.mjs";
 
 test("delegate_subagents exposes a bounded parallel worker tool", () => {
   assert.equal(delegateSubagentsTool.name, "delegate_subagents");
@@ -11,7 +11,7 @@ test("delegate_subagents exposes a bounded parallel worker tool", () => {
 });
 
 test("worker extension registers only bounded workspace tools", async () => {
-  const { default: workerTools } = await import("../src/worker-tools.mjs");
+  const { default: workerTools } = await import("../../src/agents/worker-tools.mjs");
   const names = [];
   workerTools({ registerTool: (tool) => names.push(tool.name) });
   assert.deepEqual(names, ["workspace_read", "workspace_search", "workspace_list"]);
@@ -23,7 +23,7 @@ test("swarm contract stays bounded and read-only", () => {
 });
 
 test("plugin worker surface contains no mutation or process tools", async () => {
-  const { default: workerTools } = await import("../src/worker-tools.mjs");
+  const { default: workerTools } = await import("../../src/agents/worker-tools.mjs");
   const registered = [];
   workerTools({ registerTool: (tool) => registered.push(tool) });
   assert.deepEqual(registered.map((tool) => tool.name), ["workspace_read", "workspace_search", "workspace_list"]);

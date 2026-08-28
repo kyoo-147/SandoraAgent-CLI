@@ -3,10 +3,10 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createAgentSession, providerFromEnvironment } from "../src/native-agent-session.mjs";
-import { createDelegateSubagentsTool } from "../src/subagents.mjs";
-import { defineTool, NativeToolRegistry } from "../src/tool-registry.mjs";
-import { JsonlSessionStore } from "../src/runtime.mjs";
+import { createAgentSession, providerFromEnvironment } from "../../src/runtime/native-agent-session.mjs";
+import { createDelegateSubagentsTool } from "../../src/agents/subagents.mjs";
+import { defineTool, NativeToolRegistry } from "../../src/tools/registry.mjs";
+import { JsonlSessionStore } from "../../src/runtime/turn-runtime.mjs";
 
 const text = result => result.content[0].text;
 

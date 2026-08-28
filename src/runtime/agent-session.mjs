@@ -3,10 +3,12 @@
  * normalized events; runtime-specific event objects stay inside adapters.
  *
  * @typedef {Object} AgentSession
+ * @property {string|undefined} runtime
  * @property {string} sessionId
  * @property {string|undefined} thinkingLevel
  * @property {Object|undefined} model
  * @property {() => Object|undefined} getContextUsage
+ * @property {() => string|undefined} getLastAssistantText
  * @property {(text: string) => Promise<unknown>} prompt
  * @property {() => Promise<unknown>} abort
  * @property {() => void} dispose

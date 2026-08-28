@@ -1,8 +1,8 @@
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdir, readFile, writeFile, rm, access } from "node:fs/promises";
+import { mkdir, readFile, writeFile, rm, access, lstat, realpath } from "node:fs/promises";
 import { Buffer } from "node:buffer";
-import { resolve, relative, basename } from "node:path";
+import { dirname, resolve, relative, basename } from "node:path";
 
 const execFile = promisify(execFileCallback);
 const ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
@@ -11,6 +11,12 @@ function safeId(id) {
   if (!ID_RE.test(id)) throw new Error("Worker id must contain only letters, numbers, dot, underscore, or hyphen");
   return id;
 }
+function safeRef(ref, label) {
+  if (typeof ref !== "string" || !ref || ref.startsWith("-") || ref.includes("..") || ref.includes("@{")) throw new Error(`Invalid ${label}`);
+  return ref;
+}
+
+function isProtectedBranch(branch) { return ["main", "master"].includes(branch.toLowerCase()); }
 
 export class GitWorktreeError extends Error {
   constructor(message, result = {}) { super(message); this.name = "GitWorktreeError"; Object.assign(this, result); }
@@ -19,7 +25,7 @@ export class GitWorktreeError extends Error {
 export class GitWorktreeManager {
   constructor({ repoRoot = process.cwd(), worktreeRoot, metadataRoot } = {}) {
     this.repoRoot = resolve(repoRoot);
-    this.worktreeRoot = resolve(worktreeRoot || resolve(this.repoRoot, ".sandora-worktrees"));
+    this.worktreeRoot = resolve(worktreeRoot || resolve(this.repoRoot, ".sandora", "worktrees"));
     this.metadataRoot = resolve(metadataRoot || resolve(this.worktreeRoot, "metadata"));
   }
 
@@ -41,15 +47,20 @@ export class GitWorktreeManager {
     safeId(workerId);
     const path = this.pathFor(workerId);
     const branchName = branch || `sandora/swarm/${workerId}`;
-    if (resolve(path).startsWith(`${this.worktreeRoot}${requireSeparator()}`) === false) throw new Error("Worktree path escaped manager root");
+    const distance = relative(this.worktreeRoot, path);
+    if (!distance || distance === ".." || distance.startsWith(`..${requireSeparator()}`)) throw new Error("Worktree path escaped manager root");
+    safeRef(baseRef, "base ref");
+    safeRef(branchName, "worker branch");
+    if (!branchName.startsWith("sandora/swarm/") || isProtectedBranch(branchName)) throw new Error("Worker branch must use the sandora/swarm namespace");
+    await this.git(["check-ref-format", "--branch", branchName]);
+    const dirty = await this.dirtyState(this.repoRoot, { ignore: [relative(this.repoRoot, dirname(this.worktreeRoot))] });
     await mkdir(this.worktreeRoot, { recursive: true });
     await mkdir(this.metadataRoot, { recursive: true });
     try {
       await access(path);
       throw new GitWorktreeError(`Worker worktree already exists: ${path}`);
     } catch (error) { if (error instanceof GitWorktreeError) throw error; }
-    const dirty = await this.dirtyState(this.repoRoot);
-    const baseCommit = (await this.git(["rev-parse", baseRef])).stdout.trim();
+    const baseCommit = (await this.git(["rev-parse", "--verify", `${baseRef}^{commit}`])).stdout.trim();
     const result = await this.git(["worktree", "add", "-b", branchName, path, baseCommit]);
     const metadata = { version: 1, workerId, owner, branch: branchName, baseRef: baseCommit, path, repoRoot: this.repoRoot, createdAt: new Date().toISOString(), ownershipToken: `${workerId}:${Date.now()}`, sourceDirty: dirty };
     await writeFile(this.metadataPath(workerId), JSON.stringify(metadata, null, 2) + "\n", "utf8");
@@ -65,9 +76,18 @@ export class GitWorktreeManager {
     const ignored = ignore.map((item) => resolve(cwd, item));
     const isIgnored = (file) => ignored.some((prefix) => { const candidate = resolve(cwd, file); return candidate === prefix || candidate.startsWith(prefix + "/") || candidate.startsWith(prefix + "\\"); });
     const untracked = {};
+    const canonicalRoot = await realpath(cwd);
     for (const file of untrackedList.stdout.split("\0").filter(Boolean)) {
       if (isIgnored(file)) continue;
-      try { untracked[file] = Buffer.from(await readFile(resolve(cwd, file))).toString("base64"); } catch { /* file disappeared during scan */ }
+      try {
+        const candidate = resolve(cwd, file);
+        const info = await lstat(candidate);
+        if (!info.isFile() || info.isSymbolicLink()) continue;
+        const actual = await realpath(candidate);
+        const distance = relative(canonicalRoot, actual);
+        if (distance === ".." || distance.startsWith(`..${requireSeparator()}`)) continue;
+        untracked[file] = Buffer.from(await readFile(actual)).toString("base64");
+      } catch { /* file disappeared or escaped during scan */ }
     }
     const statusFiles = status.stdout.split("\0").filter(Boolean).filter((entry) => !isIgnored(entry.slice(3)));
     return { status: statusFiles.join("\0"), patch: diff.stdout, stagedPatch: staged.stdout, untracked, dirty: Boolean(statusFiles.length) };
@@ -101,10 +121,18 @@ export class GitWorktreeManager {
   }
 
   async integrate(workerId, { targetRef = "HEAD", message } = {}) {
-    const conflict = await this.conflicts(workerId, targetRef);
+    safeRef(targetRef, "target ref");
+    const currentBranch = (await this.git(["branch", "--show-current"])).stdout.trim();
+    if (!currentBranch || isProtectedBranch(currentBranch)) throw new GitWorktreeError(`Refusing worker integration into protected or detached target: ${currentBranch || "detached"}`);
+    const targetOid = (await this.git(["rev-parse", "--verify", `${targetRef}^{commit}`])).stdout.trim();
+    const headOid = (await this.git(["rev-parse", "HEAD"])).stdout.trim();
+    if (targetOid !== headOid) throw new GitWorktreeError("Integration targetRef does not match current HEAD");
+    const conflict = await this.conflicts(workerId, targetOid);
     if (conflict.conflict) throw new GitWorktreeError(`Integration conflict for ${workerId}`, conflict);
-    const state = await this.dirtyState(this.repoRoot, { ignore: [relative(this.repoRoot, this.worktreeRoot)] });
+    const state = await this.dirtyState(this.repoRoot, { ignore: [relative(this.repoRoot, dirname(this.worktreeRoot))] });
     if (state.dirty) throw new GitWorktreeError("Refusing integration into a dirty target", { state });
+    const recheckedHead = (await this.git(["rev-parse", "HEAD"])).stdout.trim();
+    if (recheckedHead !== headOid) throw new GitWorktreeError("Integration target changed during validation");
     const result = await this.git(["merge", "--no-ff", metaBranch(await this.metadata(workerId)), "-m", message || `Integrate worker ${workerId}`]);
     return { workerId, integrated: true, output: result.stdout.trim() };
   }

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createFixtureProvider, collectStream } from "./fixtures/fake-provider.mjs";
+import { createFixtureProvider, collectStream } from "../fixtures/fake-provider.mjs";
 
 async function recover(provider, prompt, attempts = 2) {
   for (let attempt = 0; attempt < attempts; attempt += 1) {

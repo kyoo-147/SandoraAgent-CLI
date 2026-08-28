@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { SandoraAgentManager } from "../src/agent-manager.mjs";
+import { SandoraAgentManager } from "../../src/agents/manager.mjs";
 
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 

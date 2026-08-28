@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { discoverPlugins, PluginHost, validateManifest } from "../src/plugin-host.mjs";
+import { discoverPlugins, PluginHost, validateManifest } from "../../src/plugins/host.mjs";
 
 const manifest = (id, entry = "index.mjs", contributes = { tools: ["hello"], providers: ["local"], agents: ["review"], commands: ["greet"], services: ["clock"], hooks: ["startup"] }) => ({ id, name: id, version: "1.0.0", api: 1, entry, contributes });
 
