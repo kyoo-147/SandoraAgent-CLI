@@ -95,5 +95,5 @@ export function normalizePiEvent(event) {
   if (event.type === "session_info_changed") return { type: "session.changed", name: event.name };
   if (event.type === "entry_appended") return { type: "session.entry", entryType: event.entry?.type };
   if (event.type === "bash_execution_update") return { type: "process.update" };
-  return null;
+  return { type: "runtime.unknown", source: "pi", sourceType: typeof event?.type === "string" ? event.type : "missing", nestedType: event?.assistantMessageEvent?.type };
 }

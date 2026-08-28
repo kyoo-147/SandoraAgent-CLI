@@ -21,3 +21,8 @@ test("Pi is the default core and unsupported runtime values fail closed", async 
   assert.equal(DEFAULT_AGENT_CORE, "pi");
   await assert.rejects(() => createSandoraSession({ core: "other" }), /Expected pi or native/);
 });
+
+test("Pi adapter preserves unknown event ordering as an explicit diagnostic", () => {
+  assert.deepEqual(normalizePiEvent({ type: "future_event", secret: "not-forwarded" }), { type: "runtime.unknown", source: "pi", sourceType: "future_event", nestedType: undefined });
+  assert.deepEqual(normalizePiEvent({ type: "message_update", assistantMessageEvent: { type: "future_delta", payload: "not-forwarded" } }), { type: "runtime.unknown", source: "pi", sourceType: "message_update", nestedType: "future_delta" });
+});
