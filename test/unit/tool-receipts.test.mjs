@@ -93,3 +93,19 @@ test("browser launch receipts bind existing-profile authority when an endpoint i
     assert.deepEqual(record.authority, { variable: "SANDORA_ALLOW_EXISTING_BROWSER_PROFILE", granted: true });
   } finally { if (previous === undefined) delete process.env.SANDORA_ALLOW_EXISTING_BROWSER_PROFILE; else process.env.SANDORA_ALLOW_EXISTING_BROWSER_PROFILE = previous; await rm(root, { recursive: true, force: true }); }
 });
+
+test("browser transfer receipts bind upload and retained-download authority", async () => {
+  const root = await rootFixture();
+  const previousUpload = process.env.SANDORA_ALLOW_BROWSER_UPLOAD, previousRetain = process.env.SANDORA_ALLOW_BROWSER_DOWNLOAD_RETAIN;
+  try {
+    process.env.SANDORA_ALLOW_BROWSER_UPLOAD = "1"; process.env.SANDORA_ALLOW_BROWSER_DOWNLOAD_RETAIN = "1";
+    await new ToolReceiptStore({ cwd: root, sessionId: "upload", runtime: "native" }).execute({ toolCallId: "upload", toolName: "browser_upload", args: { sessionId: "opaque", ref: "fresh", path: "input.txt" }, invoke: async () => "uploaded" });
+    await new ToolReceiptStore({ cwd: root, sessionId: "download", runtime: "native" }).execute({ toolCallId: "download", toolName: "browser_download_wait", args: { sessionId: "opaque", retainPath: "artifact.txt" }, invoke: async () => "retained" });
+    assert.deepEqual((await recordAt(root, "upload")).record.authority, { variable: "SANDORA_ALLOW_BROWSER_UPLOAD", granted: true });
+    assert.deepEqual((await recordAt(root, "download")).record.authority, { variable: "SANDORA_ALLOW_BROWSER_DOWNLOAD_RETAIN", granted: true });
+  } finally {
+    if (previousUpload === undefined) delete process.env.SANDORA_ALLOW_BROWSER_UPLOAD; else process.env.SANDORA_ALLOW_BROWSER_UPLOAD = previousUpload;
+    if (previousRetain === undefined) delete process.env.SANDORA_ALLOW_BROWSER_DOWNLOAD_RETAIN; else process.env.SANDORA_ALLOW_BROWSER_DOWNLOAD_RETAIN = previousRetain;
+    await rm(root, { recursive: true, force: true });
+  }
+});

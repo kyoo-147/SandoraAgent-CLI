@@ -3,16 +3,21 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import { allowedCdpWebSocket, browserTools, resolveBrowserArtifactPath, writeBrowserArtifact } from "../../src/browser/tools.mjs";
+import { allowedCdpWebSocket, browserTools, resolveBrowserArtifactPath, resolveWorkspaceRegularFile, writeBrowserArtifact } from "../../src/browser/tools.mjs";
 
 test("browser and computer contracts are registered", () => {
   const names = browserTools.map(tool => tool.name);
   assert.deepEqual(names, [
-    "browser_launch", "browser_connect", "browser_observe", "browser_navigate",
+    "browser_launch", "browser_connect", "browser_observe", "browser_upload", "browser_download_wait", "browser_navigate",
     "browser_click", "browser_type", "browser_scroll", "browser_tabs",
     "browser_screenshot", "browser_cleanup", "computer_observe", "computer_focus",
     "computer_click", "computer_type", "computer_key", "computer_scroll", "computer_screenshot",
   ]);
+});
+
+test("browser launch fails closed without a resource owner identity", async () => {
+  const launch = browserTools.find(tool => tool.name === "browser_launch");
+  await assert.rejects(() => launch.execute("ownerless", {}), /resource owner identity/);
 });
 
 test("computer tools fail closed with an explicit capability response", async () => {
@@ -20,6 +25,12 @@ test("computer tools fail closed with an explicit capability response", async ()
   const result = await tool.execute("test", {});
   assert.equal(result.details.supported, false);
   assert.match(result.content[0].text, /supported/);
+});
+
+test("browser upload paths require bounded regular files physically inside workspace", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "sandora-browser-upload-"));
+  try { await writeFile(resolve(root, "input.txt"), "payload"); assert.equal((await resolveWorkspaceRegularFile(root, "input.txt")).size, 7); await assert.rejects(() => resolveWorkspaceRegularFile(root, "../escape.txt"), /workspace/); await assert.rejects(() => resolveWorkspaceRegularFile(root, "missing.txt"), /ENOENT/); }
+  finally { await rm(root, { recursive: true, force: true }); }
 });
 
 test("browser artifact paths stay inside the runtime workspace", async () => {
@@ -35,21 +46,21 @@ test("browser artifact paths stay inside the runtime workspace", async () => {
 
 test("browser endpoint policy rejects remote CDP without explicit authority", async () => {
   const connect = browserTools.find(candidate => candidate.name === "browser_connect");
-  await assert.rejects(() => connect.execute("test", { endpoint: "https://example.com:9222" }), /SANDORA_ALLOW_REMOTE_CDP/);
-  await assert.rejects(() => connect.execute("test", { endpoint: "file:///tmp/cdp" }), /HTTP or HTTPS/);
+  await assert.rejects(() => connect.execute("test", { endpoint: "https://example.com:9222" }, undefined, undefined, { resourceOwnerId: "test-owner" }), /SANDORA_ALLOW_REMOTE_CDP/);
+  await assert.rejects(() => connect.execute("test", { endpoint: "file:///tmp/cdp" }, undefined, undefined, { resourceOwnerId: "test-owner" }), /HTTP or HTTPS/);
 });
 
 test("existing browser profiles require separate explicit authority", async () => {
   const connect = browserTools.find(tool => tool.name === "browser_connect");
   const previous = process.env.SANDORA_ALLOW_EXISTING_BROWSER_PROFILE;
-  try { delete process.env.SANDORA_ALLOW_EXISTING_BROWSER_PROFILE; await assert.rejects(() => connect.execute("test", { endpoint: "http://127.0.0.1:1" }), /EXISTING_BROWSER_PROFILE/); }
+  try { delete process.env.SANDORA_ALLOW_EXISTING_BROWSER_PROFILE; await assert.rejects(() => connect.execute("test", { endpoint: "http://127.0.0.1:1" }, undefined, undefined, { resourceOwnerId: "test-owner" }), /EXISTING_BROWSER_PROFILE/); }
   finally { if (previous === undefined) delete process.env.SANDORA_ALLOW_EXISTING_BROWSER_PROFILE; else process.env.SANDORA_ALLOW_EXISTING_BROWSER_PROFILE = previous; }
 });
 
 test("HTTPS CDP discovery uses an HTTPS client instead of rejecting the protocol", async () => {
   const connect = browserTools.find(tool => tool.name === "browser_connect");
   const previous = process.env.SANDORA_ALLOW_EXISTING_BROWSER_PROFILE;
-  try { process.env.SANDORA_ALLOW_EXISTING_BROWSER_PROFILE = "1"; await assert.rejects(() => connect.execute("test", { endpoint: "https://127.0.0.1:1" }), error => error?.code !== "ERR_INVALID_PROTOCOL"); }
+  try { process.env.SANDORA_ALLOW_EXISTING_BROWSER_PROFILE = "1"; await assert.rejects(() => connect.execute("test", { endpoint: "https://127.0.0.1:1" }, undefined, undefined, { resourceOwnerId: "test-owner" }), error => error?.code !== "ERR_INVALID_PROTOCOL"); }
   finally { if (previous === undefined) delete process.env.SANDORA_ALLOW_EXISTING_BROWSER_PROFILE; else process.env.SANDORA_ALLOW_EXISTING_BROWSER_PROFILE = previous; }
 });
 

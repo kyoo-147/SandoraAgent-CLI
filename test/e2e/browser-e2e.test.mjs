@@ -1,14 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { browserTools } from "../../src/browser/tools.mjs";
 import { createSandoraSession } from "../../src/runtime/create-session.mjs";
 
 const backendConfigured = Boolean(process.env.SANDORA_BROWSER_PATH || process.env.SANDORA_CDP_URL);
-const tool = name => browserTools.find(candidate => candidate.name === name);
+const tool = name => { const candidate = browserTools.find(item => item.name === name); return { ...candidate, execute: (id, args, signal, update, context) => candidate.execute(id, args, signal, update, { resourceOwnerId: `browser-e2e-${id}`, ...context }) }; };
 const value = result => JSON.parse(result.content[0].text);
 
 test("real CDP flow observes structured content before screenshot and cleans up", { skip: backendConfigured ? false : "set SANDORA_BROWSER_PATH or SANDORA_CDP_URL to run real browser E2E", timeout: 30_000 }, async () => {
@@ -57,6 +57,46 @@ test("real CDP flow observes structured content before screenshot and cleans up"
   }
 });
 
+test("owned browser uploads a workspace file and retains a completed download safely", { skip: backendConfigured ? false : "set SANDORA_BROWSER_PATH or SANDORA_CDP_URL to run real browser E2E", timeout: 30_000 }, async () => {
+  const workspace = await mkdtemp(resolve(tmpdir(), "sandora-browser-transfer-"));
+  await writeFile(resolve(workspace, "upload.txt"), "UPLOAD_PAYLOAD");
+  const server = createServer((request, response) => {
+    if (request.url === "/download") { response.writeHead(200, { "content-type": "text/plain", "content-disposition": "attachment; filename=sandora-download.txt" }); response.end("DOWNLOAD_PAYLOAD"); return; }
+    if (request.url === "/z" || request.url === "/a") { const name = request.url.slice(1); response.writeHead(200, { "content-type": "text/plain", "content-disposition": `attachment; filename=${name}.txt` }); response.end(name.toUpperCase()); return; }
+    response.writeHead(200, { "content-type": "text/html" }); response.end(`<title>Transfers</title><input type="file" aria-label="Upload"><a href="/download" download>Download</a><a href="/z" download>Z download</a><a href="/a" download>A download</a><p id="result">waiting</p><script>document.querySelector('input').addEventListener('change',e=>{const f=e.target.files[0];document.querySelector('#result').textContent=f.name+':'+f.size})</script>`);
+  });
+  await new Promise((resolveListen, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolveListen); });
+  const previousUpload = process.env.SANDORA_ALLOW_BROWSER_UPLOAD, previousRetain = process.env.SANDORA_ALLOW_BROWSER_DOWNLOAD_RETAIN;
+  let sessionId;
+  const context = { cwd: workspace, resourceOwnerId: "transfer-owner" };
+  try {
+    process.env.SANDORA_ALLOW_BROWSER_UPLOAD = "1"; process.env.SANDORA_ALLOW_BROWSER_DOWNLOAD_RETAIN = "1";
+    sessionId = value(await tool("browser_launch").execute("transfer", {}, undefined, undefined, context)).sessionId;
+    await tool("browser_navigate").execute("transfer", { sessionId, url: `http://127.0.0.1:${server.address().port}/` }, undefined, undefined, context);
+    await assert.rejects(() => tool("browser_observe").execute("transfer", { sessionId }, undefined, undefined, { ...context, resourceOwnerId: "other-owner" }), /different Sandora session/);
+    let observed = value(await tool("browser_observe").execute("transfer", { sessionId }, undefined, undefined, context));
+    await tool("browser_upload").execute("transfer", { sessionId, ref: observed.elements.find(element => element.text === "Upload").ref, path: "upload.txt" }, undefined, undefined, context);
+    observed = value(await tool("browser_observe").execute("transfer", { sessionId }, undefined, undefined, context)); assert.match(observed.text, /upload\.txt:14/);
+    await tool("browser_click").execute("transfer", { sessionId, ref: observed.elements.find(element => element.text === "Download").ref }, undefined, undefined, context);
+    const downloaded = value(await tool("browser_download_wait").execute("transfer", { sessionId, timeoutMs: 10_000, retainPath: "artifacts/download.txt" }, undefined, undefined, context));
+    assert.equal(downloaded.filename, "sandora-download.txt"); assert.match(downloaded.sha256, /^[a-f0-9]{64}$/); assert.equal(await readFile(resolve(workspace, "artifacts/download.txt"), "utf8"), "DOWNLOAD_PAYLOAD");
+    observed = value(await tool("browser_observe").execute("transfer", { sessionId }, undefined, undefined, context));
+    await tool("browser_click").execute("transfer", { sessionId, ref: observed.elements.find(element => element.text === "Z download").ref }, undefined, undefined, context);
+    observed = value(await tool("browser_observe").execute("transfer", { sessionId }, undefined, undefined, context));
+    await tool("browser_click").execute("transfer", { sessionId, ref: observed.elements.find(element => element.text === "A download").ref }, undefined, undefined, context);
+    const [first, second] = (await Promise.all([
+      tool("browser_download_wait").execute("transfer", { sessionId, timeoutMs: 10_000 }, undefined, undefined, context),
+      tool("browser_download_wait").execute("transfer", { sessionId, timeoutMs: 10_000 }, undefined, undefined, context),
+    ])).map(value);
+    assert.equal(first.filename, "z.txt"); assert.equal(second.filename, "a.txt"); assert.notEqual(first.downloadId, second.downloadId);
+  } finally {
+    if (previousUpload === undefined) delete process.env.SANDORA_ALLOW_BROWSER_UPLOAD; else process.env.SANDORA_ALLOW_BROWSER_UPLOAD = previousUpload;
+    if (previousRetain === undefined) delete process.env.SANDORA_ALLOW_BROWSER_DOWNLOAD_RETAIN; else process.env.SANDORA_ALLOW_BROWSER_DOWNLOAD_RETAIN = previousRetain;
+    if (sessionId) await tool("browser_cleanup").execute("transfer", { sessionId }, undefined, undefined, context).catch(() => {});
+    const closed = new Promise(resolveClose => server.close(resolveClose)); server.closeAllConnections(); await closed; await rm(workspace, { recursive: true, force: true });
+  }
+});
+
 test("disposing a Sandora session cleans its owned browser sessions", { skip: backendConfigured ? false : "set SANDORA_BROWSER_PATH or SANDORA_CDP_URL to run real browser E2E", timeout: 30_000 }, async () => {
   const workspace = await mkdtemp(resolve(tmpdir(), "sandora-browser-owner-"));
   const provider = { model: "unused", async *stream() {} };
@@ -67,7 +107,8 @@ test("disposing a Sandora session cleans its owned browser sessions", { skip: ba
   try {
     await owner.dispose();
     await assert.rejects(() => tool("browser_observe").execute("owner", { sessionId }), /Unknown browser session/);
-    assert.equal(value(await tool("browser_observe").execute("peer", { sessionId: peerSessionId })).url, "about:blank");
+    await assert.rejects(() => tool("browser_observe").execute("peer", { sessionId: peerSessionId }, undefined, undefined, { resourceOwnerId: "owner-a" }), /different Sandora session/);
+    assert.equal(value(await tool("browser_observe").execute("peer", { sessionId: peerSessionId }, undefined, undefined, { resourceOwnerId: "owner-b" })).url, "about:blank");
   } finally {
     await owner.dispose().catch(() => {});
     await peer.dispose().catch(() => {});

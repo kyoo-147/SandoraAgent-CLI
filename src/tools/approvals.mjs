@@ -5,7 +5,7 @@ function canonicalInput(value) { return value === null || typeof value === "stri
 const canonicalInputSha256 = value => createHash("sha256").update(canonicalInput(value ?? {})).digest("hex");
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
-const VARIABLES = new Set(["SANDORA_ALLOW_BROWSER_SUBMIT", "SANDORA_ALLOW_EXISTING_BROWSER_PROFILE", "SANDORA_ALLOW_BROWSER_CROSS_ORIGIN", "SANDORA_ALLOW_REMOTE_CDP", "SANDORA_ALLOW_PACKAGE_SCRIPTS", "SANDORA_ALLOW_WORKER_INTEGRATION", "SANDORA_ALLOW_LOCAL_MERGE", "SANDORA_ALLOW_PR_MERGE", "SANDORA_ALLOW_UNCHECKED_PR_MERGE"]);
+const VARIABLES = new Set(["SANDORA_ALLOW_BROWSER_SUBMIT", "SANDORA_ALLOW_BROWSER_UPLOAD", "SANDORA_ALLOW_BROWSER_DOWNLOAD_RETAIN", "SANDORA_ALLOW_EXISTING_BROWSER_PROFILE", "SANDORA_ALLOW_BROWSER_CROSS_ORIGIN", "SANDORA_ALLOW_REMOTE_CDP", "SANDORA_ALLOW_PACKAGE_SCRIPTS", "SANDORA_ALLOW_WORKER_INTEGRATION", "SANDORA_ALLOW_LOCAL_MERGE", "SANDORA_ALLOW_PR_MERGE", "SANDORA_ALLOW_UNCHECKED_PR_MERGE"]);
 const canonical = value => value === null || typeof value === "string" || typeof value === "boolean" || typeof value === "number" ? JSON.stringify(value) : Array.isArray(value) ? `[${value.map(canonical).join(",")}]` : `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}`;
 const digest = value => createHash("sha256").update(canonical(value)).digest("hex");
 

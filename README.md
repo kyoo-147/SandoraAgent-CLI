@@ -65,7 +65,7 @@ The native runtime can select an enabled provider contribution with `SANDORA_PRO
 
 Pinned `@earendil-works/pi-coding-agent@0.84.3` provides the default model loop and append-only session engine. Sandora confines it behind `src/runtime/pi-agent-session.mjs`, disables Pi's unrestricted built-in mutation/shell tools, and supplies workspace-scoped coding, Git, browser, and delegation tools. Pi sessions persist under `.sandora/pi-sessions`.
 
-Set `SANDORA_AGENT_CORE=native` to use Sandora's independent fallback runtime and `.sandora/session.jsonl` store. A session never mixes the two runtime formats.
+Set `SANDORA_AGENT_CORE=native` to use Sandora's independent fallback runtime and `.sandora/session.jsonl` store. A session never mixes the two runtime formats. If restart recovery finds an assistant tool call without a durably recorded result, native recovery appends a synthetic ambiguous-failure tool result rather than resuming an invalid transcript or claiming the external effect did not occur.
 
 The parent agent remains responsible for planning, synthesis, integration, testing, review, and Git delivery. Read-only delegation is bounded to four concurrent tasks. Writable workers receive separate Git worktrees under `.sandora/worktrees`; dirty or unintegrated work is preserved, and integration is disabled unless `SANDORA_ALLOW_WORKER_INTEGRATION=1` grants explicit runtime authority.
 
@@ -115,6 +115,8 @@ When `SANDORA_REQUIRE_APPROVALS=1` is set, consequential authority operations ad
 Browser navigation pins the requested origin and refuses cross-origin redirects, links, observations, and tab switches by default. Grant an intentional cross-origin transition with `SANDORA_ALLOW_BROWSER_CROSS_ORIGIN=1`; consequential submit/send/delete/pay actions separately require `SANDORA_ALLOW_BROWSER_SUBMIT=1`.
 
 Launching without an endpoint creates and reports an `anonymous-ephemeral` browser profile owned by the Sandora session. Connecting to `SANDORA_CDP_URL` or an explicit CDP endpoint is treated as an existing, potentially signed-in profile and requires separate `SANDORA_ALLOW_EXISTING_BROWSER_PROFILE=1` authority; it is reported as `authorized-existing` and Sandora closes only its CDP connection rather than killing the external browser. Session disposal cleans all browser connections and verifies removal of profiles it launched.
+
+File upload requires a fresh observed `input[type=file]` ref, a bounded regular file physically contained in the workspace, and `SANDORA_ALLOW_BROWSER_UPLOAD=1`. Sandora hashes and stages the selected bytes in a session-owned temporary snapshot so later workspace replacement cannot alter the browser's selected file. Anonymous owned sessions keep downloads in an isolated temporary directory and consume completed CDP download events in start order; retaining a completed download uses exclusive workspace artifact creation and separately requires `SANDORA_ALLOW_BROWSER_DOWNLOAD_RETAIN=1`. Session disposal removes owned upload snapshots and temporary downloads. Sandora does not claim automatic content redaction for uploaded or downloaded files.
 
 The parent process runs with the permissions of the current user. Use a container or OS sandbox when stronger isolation is required. Worker restrictions in this MVP are application-level, not a security boundary.
 

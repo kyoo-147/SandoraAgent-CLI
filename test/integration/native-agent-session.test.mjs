@@ -96,6 +96,32 @@ test("native session retains completed tool turns across provider failure and re
   }
 });
 
+test("native restart repairs an assistant tool call missing its durable result", async () => {
+  const root = await mkdtemp(join(tmpdir(), "sandora-native-incomplete-tool-"));
+  const sessionPath = join(root, "session.jsonl");
+  const store = new JsonlSessionStore(sessionPath);
+  try {
+    await store.append({ type: "session.started", sessionId: "recovery-session" });
+    await store.append({ type: "turn.started", sessionId: "recovery-session", turnId: "interrupted" });
+    await store.append({ type: "message", turnId: "interrupted", message: { role: "user", content: "change it" } });
+    await store.append({ type: "message", turnId: "interrupted", message: { role: "assistant", content: null, tool_calls: [{ id: "missing-result", type: "function", function: { name: "mutate", arguments: "{}" } }] } });
+    const provider = { model: "fixture", async *stream({ messages }) {
+      const repaired = messages.find(message => message.role === "tool" && message.tool_call_id === "missing-result");
+      assert.ok(repaired, "restart must provide a matching synthetic tool result");
+      assert.match(repaired.content, /ambiguousExternalEffect/);
+      yield { type: "text_delta", delta: "recovered safely" };
+    } };
+    const session = await createAgentSession({ cwd: root, sessionPath, provider, registry: new NativeToolRegistry() });
+    assert.equal((await session.prompt("continue")).message.content, "recovered safely");
+    session.dispose();
+    const durable = await store.replay();
+    assert.equal(durable.filter(event => event.type === "recovery.tool_result_synthesized").length, 1);
+    const restarted = await createAgentSession({ cwd: root, sessionPath, provider: { model: "fixture", async *stream() { yield { type: "text_delta", delta: "again" }; } }, registry: new NativeToolRegistry() });
+    restarted.dispose();
+    assert.equal((await store.replay()).filter(event => event.type === "recovery.tool_result_synthesized").length, 1, "repair must be idempotent");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test("native session aborts an active provider stream", async () => {
   const root = await mkdtemp(join(tmpdir(), "sandora-native-abort-"));
   const provider = { model: "fixture", async *stream({ signal }) {

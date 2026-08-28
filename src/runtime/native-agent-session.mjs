@@ -21,6 +21,22 @@ export function providerFromEnvironment(env = process.env, fetchImpl = globalThi
   return new OpenAICompatibleProvider({ apiKey: env.OPENAI_API_KEY, baseUrl: env.OPENAI_BASE_URL || "https://api.openai.com/v1", model, fetchImpl });
 }
 
+async function repairIncompleteToolTranscript(store, events) {
+  const messages = events.filter(event => event.type === "message").map(event => event.message).filter(Boolean);
+  const pending = new Map();
+  for (const message of messages) {
+    if (message.role === "assistant") for (const call of message.tool_calls || []) if (call?.id) pending.set(call.id, call);
+    if (message.role === "tool" && message.tool_call_id) pending.delete(message.tool_call_id);
+  }
+  for (const [toolCallId, call] of pending) {
+    const message = { role: "tool", tool_call_id: toolCallId, content: JSON.stringify({ error: "Tool execution outcome was not durably recorded before restart", recoveryGenerated: true, ambiguousExternalEffect: true }) };
+    await store.append({ type: "message", message, recoveryGenerated: true });
+    await store.append({ type: "recovery.tool_result_synthesized", toolCallId, toolName: call.function?.name || "unknown", status: "AMBIGUOUS" });
+    messages.push(message);
+  }
+  return messages;
+}
+
 export async function createAgentSession({
   cwd = process.cwd(),
   sessionPath = join(cwd, ".sandora", "session.jsonl"),
@@ -32,7 +48,7 @@ export async function createAgentSession({
   const store = new JsonlSessionStore(sessionPath);
   const bus = new EventBus();
   const events = await store.replay();
-  const resumed = events.filter(event => event.type === "message").map(event => event.message);
+  const resumed = await repairIncompleteToolTranscript(store, events);
   const existingSession = events.find(event => event.type === "session.started");
   const sessionId = existingSession?.sessionId || randomUUID();
   const receipts = new ToolReceiptStore({ cwd, sessionId, runtime: "native" });
@@ -65,7 +81,7 @@ export async function createAgentSession({
       active = { controller, turnId };
       const userMessage = { role: "user", content: text };
       await store.append({ type: "turn.started", sessionId, turnId });
-      await store.appendMessage(userMessage);
+      await store.append({ type: "message", sessionId, turnId, message: userMessage });
       messages.push(userMessage);
       bus.emit("agent", { type: "agent.start" });
       bus.emit("agent", { type: "message.start", role: "assistant" });
@@ -78,7 +94,7 @@ export async function createAgentSession({
           maxSteps,
           signal: controller.signal,
           bus,
-          onMessage: message => store.appendMessage(message),
+          onMessage: message => store.append({ type: "message", sessionId, turnId, message }),
           onPartial: message => store.append({ type: "assistant.partial", sessionId, turnId, status: "INTERRUPTED", content: message.content.slice(0, 20_000), contentBytes: Buffer.byteLength(message.content), truncated: message.content.length > 20_000 }),
           executeTool: async (name, args, context) => {
             const toolExecutionId = randomUUID();
