@@ -77,6 +77,9 @@ export class PluginHost {
 
   list() { return [...this.plugins.values()].map(({ manifest, state, error }) => ({ id: manifest?.id, state, error })); }
   contributions(type) { if (!CONTRIBUTION_TYPES.includes(type)) throw new Error(`unknown contribution type: ${type}`); return new Map(this.registries[type]); }
+  async disposeAll() {
+    for (const plugin of [...this.plugins.values()].reverse()) if (plugin.state === "active") await this.#dispose(plugin);
+  }
   enable(id) { this.enabled.add(id); return this.activate(id); }
   async disable(id) {
     const plugin = this.plugins.get(id);
@@ -104,11 +107,13 @@ export class PluginHost {
     if (!plugin) return { id, state: "failed", error: "unknown plugin" };
     if (plugin.state === "active") return { id, state: "active" };
     const names = contributionNames(plugin.manifest);
+    const declared = new Set(names);
     const seen = new Set();
     const collisions = names.filter((key) => seen.has(key) || this.core.has(key) || [...this.registries[key.split(":")[0]].keys()].includes(key.slice(key.indexOf(":") + 1)) || !seen.add(key));
     if (collisions.length) return this.#failed(plugin, `contribution collision: ${[...new Set(collisions)].join(", ")}`);
     const added = [];
     const api = Object.fromEntries(CONTRIBUTION_TYPES.map((type) => [type === "hook" ? "registerHook" : `register${type[0].toUpperCase()}${type.slice(1)}`, (name, value) => {
+      if (!declared.has(`${type}:${name}`)) throw new Error(`undeclared contribution: ${type}:${name}`);
       if (!nonEmpty(name) || this.core.has(`${type}:${name}`) || this.registries[type].has(name) || added.some((entry) => entry.type === type && entry.name === name)) throw new Error(`contribution collision: ${type}:${name}`);
       this.registries[type].set(name, { plugin: id, value }); added.push({ type, name });
       return () => { if (this.registries[type].get(name)?.plugin === id) this.registries[type].delete(name); };

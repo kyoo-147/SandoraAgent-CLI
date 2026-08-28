@@ -26,6 +26,8 @@ const checks = [
   [process.execPath, ["--check", "src/agents/subagents.mjs"]],
   [process.execPath, ["--check", "src/agents/pi-subagents.mjs"]],
   [process.execPath, ["--check", "src/agents/pi-writable-workers.mjs"]],
+  [process.execPath, ["--check", "src/plugins/host.mjs"]],
+  [process.execPath, ["--check", "src/plugins/runtime.mjs"]],
   [process.execPath, ["--test"]],
   [process.execPath, ["scripts/cli-smoke.mjs"]],
 ];

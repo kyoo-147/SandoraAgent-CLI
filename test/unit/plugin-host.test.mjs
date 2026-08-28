@@ -54,8 +54,8 @@ test("activates all contribution kinds transactionally, then disposes on disable
 test("rejects collisions and rolls back partial activation", async () => {
   const root = await mkdtemp(join(tmpdir(), "sandora-plugins-"));
   try {
-    await fixture(root, "one", "export function activate(api) { api.registerTool(\"shared\", {}); }");
-    await fixture(root, "two", "export function activate(api) { api.registerTool(\"shared\", {}); throw new Error(\"boom\"); }");
+    await fixture(root, "one", "export function activate(api) { api.registerTool(\"shared\", {}); }", manifest("one", "index.mjs", { tools: ["shared"] }));
+    await fixture(root, "two", "export function activate(api) { api.registerTool(\"shared\", {}); throw new Error(\"boom\"); }", manifest("two", "index.mjs", { tools: ["shared"] }));
     const host = new PluginHost({ enabled: ["one", "two"], core: { "tool:core": {} } });
     await host.load(await discoverPlugins(root));
     assert.equal(host.list().find((x) => x.id === "one").state, "active");
@@ -80,4 +80,21 @@ test("plugin entry cannot escape its plugin directory", async () => {
     delete globalThis.__escapedPlugin;
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("rejects undeclared contributions and disposes all active plugins", async () => {
+  const root = await mkdtemp(join(tmpdir(), "sandora-plugins-"));
+  try {
+    await fixture(root, "strict", `export function activate(api) { api.registerTool("other", {}); }`, manifest("strict", "index.mjs", { tools: ["declared"] }));
+    const strict = new PluginHost({ enabled: ["strict"] });
+    await strict.load(await discoverPlugins(root));
+    assert.match(strict.list()[0].error, /undeclared contribution/);
+
+    await fixture(root, "owned", `export function activate(api) { api.registerTool("owned", {}); return () => { globalThis.__pluginDisposeCount = (globalThis.__pluginDisposeCount || 0) + 1; }; }`, manifest("owned", "index.mjs", { tools: ["owned"] }));
+    const owned = new PluginHost({ enabled: ["owned"] });
+    await owned.load(await discoverPlugins(root));
+    await owned.disposeAll();
+    await owned.disposeAll();
+    assert.equal(globalThis.__pluginDisposeCount, 1);
+  } finally { delete globalThis.__pluginDisposeCount; await rm(root, { recursive: true, force: true }); }
 });

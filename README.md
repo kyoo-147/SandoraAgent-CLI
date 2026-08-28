@@ -57,12 +57,9 @@ Credentials remain on the user's machine and are not stored in this repository.
 
 ### Local plugins
 
-`src/plugins/host.mjs` provides an independent, local plugin host. It discovers one
-`sandora.plugin.json` (or `plugin.json`) per immediate child directory, validates
-API version 1 manifests, and safely skips malformed entries. Enabled plugins may
-register `tools`, `providers`, `agents`, `commands`, `services`, and `hooks` via
-`PluginHost`; activation is transactional and `disable()` disposes registrations.
-Contribution names collide fail-closed with built-in and already-active names.
+Place explicitly trusted plugins under `.sandora/plugins/<id>` and enable them with a comma-separated `SANDORA_PLUGINS=id-one,id-two`. Sandora discovers one `sandora.plugin.json` (or `plugin.json`) per immediate child, validates API version 1 declarations, activates enabled plugins transactionally, injects declared tool contributions into both runtimes, and disposes active plugins with their session. Undeclared or colliding contributions fail closed.
+
+The native runtime can select an enabled provider contribution with `SANDORA_PROVIDER_PLUGIN=<provider-name>`; provider factories must return Sandora's streaming provider contract. Pi providers continue to use Pi `ModelRuntime` and reject plugin-provider injection. Plugins execute as trusted local code with the user's permissions—they are an extension boundary, not a sandbox.
 
 ## How it works
 
