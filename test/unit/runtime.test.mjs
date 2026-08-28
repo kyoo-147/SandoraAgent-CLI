@@ -126,6 +126,22 @@ test("provider and turn loop normalize streamed usage", async () => {
   assert.deepEqual(result.usage, { input: 12, output: 4, cacheRead: 3 });
 });
 
+test("turn loop deduplicates identical usage reports within one request", async () => {
+  const usage = { prompt_tokens: 5, completion_tokens: 2, prompt_tokens_details: { cached_tokens: 1 } };
+  let durable = 0;
+  const provider = { async *stream() { yield { type: "usage", usage }; yield { type: "usage", usage }; yield { type: "text_delta", delta: "done" }; } };
+  const result = await runTurn({ provider, messages: [], onUsage: async () => { durable += 1; } });
+  assert.deepEqual(result.usage, { input: 5, output: 2, cacheRead: 1 });
+  assert.equal(durable, 1);
+});
+
+test("turn loop starts an empty successful assistant message", async () => {
+  let started = 0;
+  const result = await runTurn({ provider: { async *stream() {} }, messages: [], onAssistantStarted: async () => { started += 1; } });
+  assert.equal(started, 1);
+  assert.equal(result.message.content, null);
+});
+
 test("provider errors include bounded response detail", async () => {
   const provider = new OpenAICompatibleProvider({ model: "error", fetchImpl: async () => new Response("invalid request", { status: 400 }) });
   await assert.rejects(() => runTurn({ provider, messages: [], maxRetries: 0 }), /Provider request failed \(400\): invalid request/);

@@ -39,9 +39,15 @@ test("native session streams, executes tools, persists, and resumes", async () =
     assert.deepEqual(persisted.map(message => message.role), ["user", "assistant", "tool", "assistant"]);
     const durable = await new JsonlSessionStore(sessionPath).replay();
     assert.deepEqual(durable.map(event => event.sequence), durable.map((_event, index) => index + 1));
-    for (const type of ["session.created", "turn.requested", "turn.started", "model.request.started", "tool.call.started", "tool.call.completed", "turn.completed"]) {
+    for (const type of ["session.created", "turn.requested", "turn.started", "model.request.requested", "model.request.started", "model.request.completed", "assistant.message.started", "assistant.delta", "tool.call.requested", "tool.call.started", "tool.call.completed", "turn.completed"]) {
       assert.ok(durable.some(event => event.type === type), `missing durable ${type}`);
     }
+    assert.equal(durable.filter(event => event.type === "model.request.requested").length, 2);
+    assert.equal(durable.filter(event => event.type === "model.request.completed").length, 2);
+    assert.ok(durable.findIndex(event => event.type === "tool.call.requested") < durable.findIndex(event => event.type === "tool.call.started"));
+    for (const event of durable.filter(event => /^(model\.request|model\.usage)/.test(event.type))) assert.equal(event.correlationId, event.payload.requestId);
+    for (const event of durable.filter(event => /^assistant\./.test(event.type))) assert.equal(event.correlationId, event.payload.assistantMessageId);
+    for (const event of durable.filter(event => /^tool\.call/.test(event.type))) assert.equal(event.correlationId, event.payload.toolCallId);
     const resumedProvider = { model: "fixture", async *stream({ messages }) {
       assert.equal(messages[0].content, "fixture system");
       assert.equal(messages.filter(message => message.role === "system").length, 1);
@@ -193,8 +199,102 @@ test("native session emits normalized usage to the TUI contract", async () => {
     await session.prompt("usage");
     const ended = events.find(event => event.type === "message.end");
     assert.deepEqual(ended.usage, { input: 9, output: 2, cacheRead: 1, cost: 0 });
+    const durableUsage = (await new JsonlSessionStore(join(root, ".sandora", "session.jsonl")).replay()).find(event => event.type === "model.usage");
+    assert.deepEqual(durableUsage.payload.usage, { input: 9, output: 2, cacheRead: 1 });
     session.dispose();
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("native lifecycle persists bounded unicode deltas and model failure ordering", async () => {
+  const root = await mkdtemp(join(tmpdir(), "sandora-native-lifecycle-failure-"));
+  const content = "🙂".repeat(6000);
+  const provider = { model: "fixture", async *stream() { yield { type: "text_delta", delta: content }; throw new Error("stream failed"); } };
+  try {
+    const session = await createAgentSession({ cwd: root, provider, registry: new NativeToolRegistry(), maxSteps: 1 });
+    await assert.rejects(session.prompt("fail after text"), /stream failed/);
+    const durable = await new JsonlSessionStore(join(root, ".sandora", "session.jsonl")).replay();
+    const deltas = durable.filter(event => event.type === "assistant.delta");
+    assert.equal(durable.filter(event => event.type === "assistant.message.started").length, 1);
+    assert.equal(deltas.map(event => event.payload.delta).join(""), content);
+    assert.equal(deltas.every(event => Buffer.byteLength(event.payload.delta) <= 4096), true);
+    const interrupted = durable.find(event => event.type === "assistant.message.interrupted");
+    assert.equal(interrupted.payload.truncated, true);
+    assert.equal(interrupted.payload.contentBytes, Buffer.byteLength(interrupted.payload.content));
+    assert.ok(interrupted.payload.contentBytes <= 20_000);
+    assert.ok(durable.findIndex(event => event.type === "model.request.failed") < durable.findIndex(event => event.type === "turn.failed"));
+    assert.equal(durable.some(event => event.type === "model.request.completed"), false);
+    session.dispose();
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("native explicit close is durable and idempotent without claiming crash closure", async () => {
+  const root = await mkdtemp(join(tmpdir(), "sandora-native-close-"));
+  try {
+    const session = await createAgentSession({ cwd: root, provider: { model: "fixture", async *stream() { yield { type: "text_delta", delta: "done" }; } }, registry: new NativeToolRegistry() });
+    await session.close(); await session.close();
+    await assert.rejects(() => session.prompt("after close"), /closed/);
+    const durable = await new JsonlSessionStore(join(root, ".sandora", "session.jsonl")).replay();
+    assert.equal(durable.filter(event => event.type === "session.closed").length, 1);
+    await assert.rejects(() => createAgentSession({ cwd: root, provider: { model: "fixture", async *stream() {} }, registry: new NativeToolRegistry() }), /closed/);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("native close settles active cancellation before durable session closure", async () => {
+  const root = await mkdtemp(join(tmpdir(), "sandora-native-active-close-"));
+  let streamStarted;
+  const started = new Promise(resolve => { streamStarted = resolve; });
+  const provider = { model: "fixture", async *stream({ signal }) { streamStarted(); await new Promise((resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true })); } };
+  try {
+    const session = await createAgentSession({ cwd: root, provider, registry: new NativeToolRegistry() });
+    const pending = session.prompt("wait"); const rejected = assert.rejects(pending, /closed/i); await started;
+    await session.close(); await rejected;
+    const durable = await new JsonlSessionStore(join(root, ".sandora", "session.jsonl")).replay();
+    const cancelled = durable.findIndex(event => event.type === "turn.cancelled");
+    const closed = durable.findIndex(event => event.type === "session.closed");
+    assert.ok(cancelled >= 0 && cancelled < closed);
+    assert.equal(durable.filter(event => event.type === "turn.cancel.requested").length, 1);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("native abort classifies an in-flight tool as cancelled", async () => {
+  const root = await mkdtemp(join(tmpdir(), "sandora-native-tool-cancel-"));
+  let toolStarted;
+  const started = new Promise(resolve => { toolStarted = resolve; });
+  const registry = new NativeToolRegistry();
+  registry.register({ name: "wait", async execute(_id, _args, signal) { toolStarted(); await new Promise((resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true })); } });
+  const provider = { model: "fixture", async *stream() { yield { type: "tool_call_delta", index: 0, id: "cancel-tool", name: "wait", arguments: "{}" }; } };
+  try {
+    const session = await createAgentSession({ cwd: root, provider, registry });
+    const pending = session.prompt("cancel tool"); const rejected = assert.rejects(pending, /aborted/i); await started;
+    await session.abort(); await rejected;
+    const durable = await new JsonlSessionStore(join(root, ".sandora", "session.jsonl")).replay();
+    assert.equal(durable.filter(event => event.type === "tool.call.cancelled" && event.payload.toolCallId === "cancel-tool").length, 1);
+    assert.equal(durable.some(event => event.type === "tool.call.failed" && event.payload.toolCallId === "cancel-tool"), false);
+    session.dispose();
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("native restart classifies incomplete lifecycle boundaries exactly once", async () => {
+  const root = await mkdtemp(join(tmpdir(), "sandora-native-lifecycle-repair-"));
+  const sessionPath = join(root, "session.jsonl");
+  const store = new JsonlSessionStore(sessionPath);
+  try {
+    await store.append({ type: "session.created", sessionId: "repair", runtime: "sandora-native", model: "fixture" });
+    await store.append({ type: "model.request.requested", correlationId: "request-intent", sessionId: "repair", turnId: "turn-open", requestId: "request-intent", step: 0, attempt: 0 });
+    await store.append({ type: "model.request.started", correlationId: "request-open", sessionId: "repair", turnId: "turn-open", requestId: "request-open", step: 0, attempt: 0 });
+    await store.append({ type: "assistant.message.started", correlationId: "assistant-open", sessionId: "repair", turnId: "turn-open", requestId: "request-open", assistantMessageId: "assistant-open", step: 0 });
+    await store.append({ type: "tool.call.started", correlationId: "tool-open", sessionId: "repair", turnId: "turn-open", toolCallId: "tool-open", toolExecutionId: "execution-open", name: "mutate", step: 0 });
+    await store.append({ type: "tool.call.requested", correlationId: "tool-intent", sessionId: "repair", turnId: "turn-open", requestId: "request-open", assistantMessageId: "assistant-open", toolCallId: "tool-intent", name: "mutate", step: 0 });
+    const create = () => createAgentSession({ cwd: root, sessionPath, provider: { model: "fixture", async *stream() { yield { type: "text_delta", delta: "unused" }; } }, registry: new NativeToolRegistry() });
+    const first = await create(); first.dispose();
+    const second = await create(); second.dispose();
+    const durable = await store.replay();
+    assert.equal(durable.filter(event => event.type === "model.request.unknown" && event.payload.requestId === "request-open").length, 1);
+    assert.equal(durable.filter(event => event.type === "model.request.unknown" && event.payload.requestId === "request-intent").length, 1);
+    assert.equal(durable.filter(event => event.type === "tool.call.unknown" && event.payload.toolCallId === "tool-open").length, 1);
+    assert.equal(durable.filter(event => event.type === "tool.call.unknown" && event.payload.toolCallId === "tool-intent").length, 1);
+    assert.equal(durable.filter(event => event.type === "assistant.message.interrupted" && event.payload.assistantMessageId === "assistant-open").length, 1);
+  } finally { await rm(root, { recursive: true, force: true }); }
 });
