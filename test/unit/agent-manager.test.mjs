@@ -64,3 +64,27 @@ test("stress run preserves deterministic queue order under the concurrency ceili
   assert.ok(peak <= 4);
   assert.deepEqual(order, tasks.map((task) => task.prompt));
 });
+
+test("task dependencies gate execution and failed prerequisites block dependents", async () => {
+  const order = [];
+  const manager = new SandoraAgentManager({ maxConcurrency: 3, rampStep: 3, runner: async prompt => { order.push(prompt); if (prompt === "fail") throw new Error("broken prerequisite"); return prompt; } });
+  const status = await manager.start([
+    { id: "final", prompt: "final", dependencies: ["middle"] },
+    { id: "middle", prompt: "middle", dependsOn: ["root"] },
+    { id: "root", prompt: "root" },
+    { id: "blocked", prompt: "blocked", dependencies: ["failure"] },
+    { id: "failure", prompt: "fail" },
+  ]);
+  assert.deepEqual(order, ["fail", "root", "middle", "final"]);
+  assert.equal(status.tasks.find(task => task.key === "blocked").status, "blocked");
+  assert.match(status.tasks.find(task => task.key === "blocked").error, /failure/);
+  assert.deepEqual(status.tasks.find(task => task.key === "final").dependencies, ["middle"]);
+});
+
+test("task dependency graphs reject missing nodes and cycles before dispatch", () => {
+  let calls = 0;
+  const manager = new SandoraAgentManager({ runner: async () => { calls += 1; } });
+  assert.throws(() => manager.start([{ id: "a", dependencies: ["missing"] }]), /unknown task dependency/);
+  assert.throws(() => manager.start([{ id: "a", dependencies: ["b"] }, { id: "b", dependencies: ["a"] }]), /dependency cycle/);
+  assert.equal(calls, 0);
+});

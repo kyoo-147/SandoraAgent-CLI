@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import { allowedCdpWebSocket, browserTools, resolveBrowserArtifactPath, resolveWorkspaceRegularFile, writeBrowserArtifact } from "../../src/browser/tools.mjs";
+import { allowedCdpWebSocket, browserTools, resolveBrowserArtifactPath, resolveWorkspaceRegularFile, visibleBrowserTabs, writeBrowserArtifact } from "../../src/browser/tools.mjs";
 
 test("browser and computer contracts are registered", () => {
   const names = browserTools.map(tool => tool.name);
@@ -62,6 +62,18 @@ test("HTTPS CDP discovery uses an HTTPS client instead of rejecting the protocol
   const previous = process.env.SANDORA_ALLOW_EXISTING_BROWSER_PROFILE;
   try { process.env.SANDORA_ALLOW_EXISTING_BROWSER_PROFILE = "1"; await assert.rejects(() => connect.execute("test", { endpoint: "https://127.0.0.1:1" }, undefined, undefined, { resourceOwnerId: "test-owner" }), error => error?.code !== "ERR_INVALID_PROTOCOL"); }
   finally { if (previous === undefined) delete process.env.SANDORA_ALLOW_EXISTING_BROWSER_PROFILE; else process.env.SANDORA_ALLOW_EXISTING_BROWSER_PROFILE = previous; }
+});
+
+test("browser tab discovery hides unauthorized origins and internal tabs", () => {
+  const tabs = [
+    { id: "current", type: "page", title: "Current", url: "https://allowed.test/a" },
+    { id: "same", type: "page", title: "Same", url: "https://allowed.test/b" },
+    { id: "foreign", type: "page", title: "Signed in", url: "https://private.test/account" },
+    { id: "internal", type: "page", title: "Settings", url: "chrome://settings" },
+  ];
+  assert.deepEqual(visibleBrowserTabs(tabs, { allowedOrigin: "https://allowed.test", targetId: "current", allowCrossOrigin: false }).map(tab => tab.id), ["current", "same"]);
+  assert.deepEqual(visibleBrowserTabs(tabs, { allowedOrigin: null, targetId: "current", allowCrossOrigin: false }).map(tab => tab.id), ["current"]);
+  assert.equal(visibleBrowserTabs(tabs, { allowedOrigin: "https://allowed.test", targetId: "current", allowCrossOrigin: true }).length, 4);
 });
 
 test("CDP target WebSockets remain pinned to the authorized discovery endpoint", () => {

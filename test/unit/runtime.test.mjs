@@ -173,3 +173,15 @@ test("JSONL append terminates a complete unterminated envelope without data loss
     assert.equal((await store.replay()).length, 2);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
+
+test("event bus isolates listener failures and reports bounded diagnostics", () => {
+  const bus = new EventBus();
+  const received = []; const diagnostics = [];
+  bus.on("activity", () => { throw new Error("renderer failed"); });
+  bus.on("activity", event => received.push(event));
+  bus.on("listener_error", event => diagnostics.push(event));
+  bus.on("listener_error", () => { throw new Error("diagnostic listener failed"); });
+  assert.doesNotThrow(() => bus.emit("activity", { value: 1 }));
+  assert.deepEqual(received, [{ type: "activity", value: 1 }]);
+  assert.deepEqual(diagnostics, [{ type: "listener_error", sourceType: "activity", error: "renderer failed" }]);
+});

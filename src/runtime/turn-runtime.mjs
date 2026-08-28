@@ -11,7 +11,15 @@ export class EventBus {
     return () => this.#listeners.get(type)?.delete(listener);
   }
   emit(type, event = {}) {
-    for (const listener of this.#listeners.get(type) || []) listener({ type, ...event });
+    const payload = { type, ...event };
+    for (const listener of [...(this.#listeners.get(type) || [])]) {
+      try { listener(payload); }
+      catch (error) {
+        if (type === "listener_error") continue;
+        const diagnostic = { type: "listener_error", sourceType: type, error: String(error instanceof Error ? error.message : error).slice(0, 1_000) };
+        for (const observer of [...(this.#listeners.get("listener_error") || [])]) try { observer(diagnostic); } catch { /* listener diagnostics are isolated too */ }
+      }
+    }
   }
   clear() { this.#listeners.clear(); }
 }

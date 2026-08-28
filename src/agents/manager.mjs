@@ -27,7 +27,21 @@ function normalizeTask(task, index) {
   if (typeof task === "string") task = { prompt: task };
   if (!task || typeof task !== "object") throw new TypeError("each task must be an object or string");
   const key = task.id ?? task.key ?? task.name ?? `task-${index}`;
-  return { ...task, key: String(key), agentId: task.agentId ?? stableId("agent", key), status: "queued", attempts: task.attempts ?? 0, result: undefined, error: undefined, artifacts: [] };
+  const rawDependencies = task.dependencies ?? task.dependsOn ?? [];
+  if (!Array.isArray(rawDependencies) || rawDependencies.some(value => typeof value !== "string" || !value)) throw new TypeError(`task ${key} dependencies must be non-empty strings`);
+  const dependencies = [...new Set(rawDependencies)];
+  return { ...task, dependencies, key: String(key), agentId: task.agentId ?? stableId("agent", key), status: dependencies.length ? "blocked" : "queued", attempts: task.attempts ?? 0, result: undefined, error: undefined, artifacts: [] };
+}
+
+function validateDependencies(tasks) {
+  const byKey = new Map(tasks.map(task => [task.key, task]));
+  for (const task of tasks) for (const dependency of task.dependencies) {
+    if (dependency === task.key) throw new Error(`task dependency cycle: ${task.key}`);
+    if (!byKey.has(dependency)) throw new Error(`unknown task dependency: ${task.key} -> ${dependency}`);
+  }
+  const visiting = new Set(); const complete = new Set();
+  const visit = task => { if (complete.has(task.key)) return; if (visiting.has(task.key)) throw new Error(`task dependency cycle: ${task.key}`); visiting.add(task.key); for (const key of task.dependencies) visit(byKey.get(key)); visiting.delete(task.key); complete.add(task.key); };
+  for (const task of tasks) visit(task);
 }
 
 function budgetFor(task) {
@@ -64,8 +78,9 @@ export class SandoraAgentManager extends EventEmitter {
       if (agents.has(task.agentId)) throw new Error(`duplicate agent ID: ${task.agentId}`);
       keys.add(task.key); agents.add(task.agentId); budgetFor(task);
     }
+    validateDependencies(normalized);
     normalized.sort((a, b) => a.key.localeCompare(b.key));
-    const identity = idempotencyKey === undefined ? canonical(normalized.map(({ prompt, task, config, context, tools, model, budget, key, agentId }) => ({ prompt, task, config, context, tools, model, budget, key, agentId }))) : `idempotency:${idempotencyKey}`;
+    const identity = idempotencyKey === undefined ? canonical(normalized.map(({ prompt, task, config, context, tools, model, budget, dependencies, key, agentId }) => ({ prompt, task, config, context, tools, model, budget, dependencies, key, agentId }))) : `idempotency:${idempotencyKey}`;
     const id = runId ?? stableId("run", `${this.id}:${identity}`);
     if (this.runs.has(id)) {
       const existing = this.runs.get(id);
@@ -76,7 +91,7 @@ export class SandoraAgentManager extends EventEmitter {
     this.runs.set(id, run); run.promise = this.#schedule(run); return run.promise;
   }
 
-  #newRun(id, tasks, identity) { return { id, identity, runner: this.runner, tasks: new Map(tasks.map((task) => [task.agentId, task])), queue: tasks, active: 0, unsettled: 0, limit: Math.min(this.rampStep, this.maxConcurrency), cancelled: false, controller: new AbortController(), promise: null }; }
+  #newRun(id, tasks, identity) { return { id, identity, runner: this.runner, tasks: new Map(tasks.map((task) => [task.agentId, task])), tasksByKey: new Map(tasks.map(task => [task.key, task])), queue: tasks, active: 0, unsettled: 0, limit: Math.min(this.rampStep, this.maxConcurrency), cancelled: false, controller: new AbortController(), promise: null }; }
 
   cancel(runId, agentId) {
     const run = this.runs.get(runId); if (!run) return false;
@@ -85,7 +100,7 @@ export class SandoraAgentManager extends EventEmitter {
       task.status = "cancelled"; task.error = "cancelled"; task.controller?.abort(); this.#emit(run, task); return true;
     }
     run.cancelled = true; run.controller.abort();
-    for (const task of run.tasks.values()) if (["queued", "running"].includes(task.status)) { task.status = "cancelled"; task.error = "cancelled"; task.controller?.abort(); this.#emit(run, task); }
+    for (const task of run.tasks.values()) if (["queued", "blocked", "running"].includes(task.status)) { task.status = "cancelled"; task.error = "cancelled"; task.controller?.abort(); this.#emit(run, task); }
     return true;
   }
 
@@ -102,23 +117,35 @@ export class SandoraAgentManager extends EventEmitter {
 
   resume(runId, { runner } = {}) {
     const run = this.runs.get(runId); if (!run) throw new Error(`Unknown run: ${runId}`);
-    if (run.active || run.unsettled || [...run.tasks.values()].some((task) => ["queued", "running"].includes(task.status))) throw new Error("cannot resume while a task is queued or running");
-    const unfinished = [...run.tasks.values()].filter((task) => task.status === "failed" || task.status === "cancelled");
+    if (run.active || run.unsettled || [...run.tasks.values()].some((task) => ["queued", "running"].includes(task.status) || (task.status === "blocked" && !task.error))) throw new Error("cannot resume while a task is queued or running");
+    const unfinished = [...run.tasks.values()].filter((task) => task.status === "failed" || task.status === "cancelled" || (task.status === "blocked" && task.error));
     if (!unfinished.length) return run.promise;
     if (runner) { if (typeof runner !== "function") throw new TypeError("runner must be a function"); run.runner = runner; }
     run.cancelled = false; run.controller = new AbortController(); run.limit = Math.min(this.rampStep, this.maxConcurrency);
-    for (const task of unfinished) { task.status = "queued"; task.error = undefined; task.result = undefined; task.artifacts = []; }
+    for (const task of unfinished) { task.status = task.dependencies.length ? "blocked" : "queued"; task.error = undefined; task.result = undefined; task.artifacts = []; }
     run.queue = unfinished;
     run.promise = this.#schedule(run); return run.promise;
   }
 
   async #schedule(run) {
-    while (run.queue.some((task) => task.status === "queued") || run.active) {
+    while (true) {
+      this.#refreshDependencies(run);
+      if (!run.queue.some(task => task.status === "queued") && !run.active) break;
       const next = run.queue.filter((task) => task.status === "queued").slice(0, Math.max(0, run.limit - run.active));
       if (!next.length) { if (run.active) await new Promise((resolve) => this.once(`idle:${run.id}`, resolve)); else break; continue; }
       await Promise.all(next.map((task) => this.#execute(run, task))); run.limit = Math.min(this.maxConcurrency, run.limit + this.rampStep);
     }
     const status = this.status(run.id); this.emit("complete", status); return status;
+  }
+
+  #refreshDependencies(run) {
+    for (const task of run.queue) {
+      if (task.status !== "blocked" || task.error) continue;
+      const dependencies = task.dependencies.map(key => run.tasksByKey.get(key));
+      const failed = dependencies.find(dependency => ["failed", "cancelled"].includes(dependency.status) || (dependency.status === "blocked" && dependency.error));
+      if (failed) { task.error = `dependency did not complete: ${failed.key} (${failed.status})`; this.#emit(run, task); }
+      else if (dependencies.every(dependency => dependency.status === "completed")) { task.status = "queued"; this.#emit(run, task); }
+    }
   }
 
   async #execute(run, task) {
@@ -157,7 +184,7 @@ export class SandoraAgentManager extends EventEmitter {
   }
 
   #emit(run, task) { this.emit("status", this.#snapshot(task), this.status(run.id)); }
-  #snapshot(task) { if (!task) return undefined; return cloneAndFreeze({ agentId: task.agentId, key: task.key, status: task.status, attempts: task.attempts, error: task.error, artifacts: task.artifacts, result: task.status === "completed" ? task.result : undefined }); }
+  #snapshot(task) { if (!task) return undefined; return cloneAndFreeze({ agentId: task.agentId, key: task.key, dependencies: task.dependencies, status: task.status, attempts: task.attempts, error: task.error, artifacts: task.artifacts, result: task.status === "completed" ? task.result : undefined }); }
 }
 
 export function createAgentManager(options) { return new SandoraAgentManager(options); }

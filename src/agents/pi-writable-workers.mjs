@@ -8,6 +8,7 @@ import { defineTool } from "../tools/registry.mjs";
 
 const WORKER_TIMEOUT_MS = 10 * 60_000;
 const MAX_RESULT_BYTES = 20_000;
+export const WRITABLE_WORKER_CODING_TOOLS = new Set(["workspace_list", "workspace_read", "workspace_search", "workspace_write", "workspace_edit"]);
 
 function text(value, details = {}) {
   const output = typeof value === "string" ? value : JSON.stringify(value, null, 2);
@@ -59,7 +60,7 @@ export function createPiWritableWorkerTools({ cwd, agentDir, modelRuntime, model
         });
         await loader.reload();
         const allowedGit = new Set(["git_status", "git_diff", "git_history", "git_commit"]);
-        const tools = [...createCodingTools().filter(tool => tool.name !== "workspace_shell"), workerVerify, ...createGitTools().filter(tool => allowedGit.has(tool.name))];
+        const tools = [...createCodingTools().filter(tool => WRITABLE_WORKER_CODING_TOOLS.has(tool.name)), workerVerify, ...createGitTools().filter(tool => allowedGit.has(tool.name))];
         const created = await createAgentSession({
           cwd: meta.path,
           agentDir,
