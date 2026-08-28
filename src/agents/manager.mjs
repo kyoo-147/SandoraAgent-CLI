@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
+import { FileTaskLeaseManager } from "./leases.mjs";
 
 const DEFAULT_MAX_CONCURRENCY = 4;
 const DEFAULT_RAMP_STEP = 1;
@@ -44,13 +45,14 @@ function budgetFor(task) {
  * continue in the background and must not retain manager ownership.
  */
 export class SandoraAgentManager extends EventEmitter {
-  constructor({ runner, maxConcurrency = DEFAULT_MAX_CONCURRENCY, rampStep = DEFAULT_RAMP_STEP, cancellationTimeoutMs = DEFAULT_CANCEL_TIMEOUT_MS, id = "default" } = {}) {
+  constructor({ runner, maxConcurrency = DEFAULT_MAX_CONCURRENCY, rampStep = DEFAULT_RAMP_STEP, cancellationTimeoutMs = DEFAULT_CANCEL_TIMEOUT_MS, id = "default", leaseRoot, leaseTtlMs } = {}) {
     super();
     if (typeof runner !== "function") throw new TypeError("runner must be a function");
     if (!Number.isInteger(maxConcurrency) || maxConcurrency < 1) throw new RangeError("maxConcurrency must be a positive integer");
     if (!Number.isInteger(rampStep) || rampStep < 1) throw new RangeError("rampStep must be a positive integer");
     if (!Number.isInteger(cancellationTimeoutMs) || cancellationTimeoutMs < 0) throw new RangeError("cancellationTimeoutMs must be a non-negative integer");
     this.runner = runner; this.maxConcurrency = maxConcurrency; this.rampStep = rampStep; this.cancellationTimeoutMs = cancellationTimeoutMs; this.id = String(id); this.runs = new Map();
+    this.leases = leaseRoot ? new FileTaskLeaseManager({ leaseRoot, ttlMs: leaseTtlMs }) : null;
   }
 
   start(tasks, { runId, idempotencyKey } = {}) {
@@ -121,10 +123,15 @@ export class SandoraAgentManager extends EventEmitter {
 
   async #execute(run, task) {
     if (run.cancelled || task.status !== "queued") return;
+    let lease;
+    if (this.leases) {
+      try { lease = await this.leases.acquire({ runId: run.id, agentId: task.agentId, attempt: task.attempts + 1, idempotencyKey: run.identity }); await this.leases.transition(lease, "RUNNING", { dispatchedAt: new Date().toISOString() }); }
+      catch (error) { task.status = "failed"; task.error = error instanceof Error ? error.message : String(error); this.#emit(run, task); return; }
+    }
     task.status = "running"; task.attempts += 1; run.active += 1; run.unsettled += 1; this.#emit(run, task);
     const controller = new AbortController(); task.controller = controller;
     const abort = () => controller.abort(); run.controller.signal.addEventListener("abort", abort, { once: true });
-    const budget = budgetFor(task); const execution = Object.freeze({ agentId: task.agentId, runId: run.id, config: cloneAndFreeze(task.config ?? {}), context: cloneAndFreeze(task.context ?? {}), tools: cloneAndFreeze(task.tools ?? []), model: task.model, budget: cloneAndFreeze(budget), signal: controller.signal });
+    const budget = budgetFor(task); const execution = Object.freeze({ agentId: task.agentId, runId: run.id, fenceToken: lease?.fenceToken, config: cloneAndFreeze(task.config ?? {}), context: cloneAndFreeze(task.context ?? {}), tools: cloneAndFreeze(task.tools ?? []), model: task.model, budget: cloneAndFreeze(budget), signal: controller.signal });
     const runnerPromise = Promise.resolve().then(() => run.runner(task.prompt ?? task.task ?? task.key, execution));
     runnerPromise.then(() => {}, () => {});
     let timer; let outcome;
@@ -135,6 +142,10 @@ export class SandoraAgentManager extends EventEmitter {
       if (outcome.kind === "result" && !controller.signal.aborted && !run.cancelled) { task.status = "completed"; task.result = outcome.value?.result ?? outcome.value; task.artifacts = Array.isArray(outcome.value?.artifacts) ? outcome.value.artifacts : []; }
       else if (outcome.kind === "error" && !controller.signal.aborted && !run.cancelled) { task.status = "failed"; task.error = outcome.error instanceof Error ? outcome.error.message : String(outcome.error); }
       else { task.status = "cancelled"; task.error = outcome.kind === "timeout" ? `wall-time budget exceeded (${budget.wallTimeMs}ms)` : "cancelled"; controller.abort(); }
+      if (lease) {
+        try { await this.leases.transition(lease, task.status.toUpperCase(), { terminalAt: new Date().toISOString() }); }
+        catch (error) { task.status = "failed"; task.result = undefined; task.artifacts = []; task.error = error instanceof Error ? error.message : String(error); }
+      }
     } finally {
       clearTimeout(timer); run.active -= 1; run.unsettled -= 1; run.controller.signal.removeEventListener("abort", abort); task.controller = undefined; this.#emit(run, task); this.emit(`idle:${run.id}`);
     }

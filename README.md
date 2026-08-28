@@ -69,6 +69,8 @@ Set `SANDORA_AGENT_CORE=native` to use Sandora's independent fallback runtime an
 
 The parent agent remains responsible for planning, synthesis, integration, testing, review, and Git delivery. Read-only delegation is bounded to four concurrent tasks. Writable workers receive separate Git worktrees under `.sandora/worktrees`; dirty or unintegrated work is preserved, and integration is disabled unless `SANDORA_ALLOW_WORKER_INTEGRATION=1` grants explicit runtime authority.
 
+The generic `SandoraAgentManager` accepts an optional shared `leaseRoot` for file-based task fencing. It atomically assigns one owner/fence token, durably marks dispatch and terminal state, rejects concurrent owners, fences stale completion, and reports expired or ambiguous ownership as `RECONCILE_REQUIRED` instead of replaying work. This coordinates manager ownership only; external side effects still require their own idempotency.
+
 ## Commands
 
 Type `/` in the CLI to open command completion.

@@ -25,6 +25,7 @@ const checks = [
   [process.execPath, ["--check", "src/tools/registry.mjs"]],
   [process.execPath, ["--check", "src/tools/receipts.mjs"]],
   [process.execPath, ["--check", "src/agents/subagents.mjs"]],
+  [process.execPath, ["--check", "src/agents/leases.mjs"]],
   [process.execPath, ["--check", "src/agents/pi-subagents.mjs"]],
   [process.execPath, ["--check", "src/agents/pi-writable-workers.mjs"]],
   [process.execPath, ["--check", "src/plugins/host.mjs"]],
