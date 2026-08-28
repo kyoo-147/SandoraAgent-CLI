@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { join } from "node:path";
 import { SandoraAgentManager, stableId } from "./manager.mjs";
 import { EventBus, runTurn } from "../runtime/turn-runtime.mjs";
 import { defineTool, NativeToolRegistry, openAiTools, toolText } from "../tools/registry.mjs";
@@ -52,6 +53,8 @@ export function createDelegateSubagentsTool({ provider, cwd, maxConcurrency = MA
   const manager = new SandoraAgentManager({
     id: "native-delegation",
     maxConcurrency: Math.min(MAX_WORKERS, maxConcurrency),
+    runStoreRoot: join(cwd, ".sandora", "tasks", "runs"),
+    leaseRoot: join(cwd, ".sandora", "tasks", "leases"),
     runner: async (task, execution) => {
       const messages = [
         { role: "system", content: "You are a bounded read-only Sandora worker. Use only the provided workspace observation tools. Return a concise evidence-backed report; never claim edits or process execution." },

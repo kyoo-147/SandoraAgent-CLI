@@ -73,6 +73,8 @@ The parent agent remains responsible for planning, synthesis, integration, testi
 
 The generic `SandoraAgentManager` accepts an optional shared `leaseRoot` for file-based task fencing. It atomically assigns one owner/fence token, serializes same-owner transitions with an exclusive lock, writes fsync-backed dispatch/terminal records, rejects concurrent or expired owners, and reports ambiguous ownership as `RECONCILE_REQUIRED` instead of replaying work. Explicit reconciliation installs a new fence and terminal resolution; it never automatically takes over side effects. This coordinates manager ownership only; external side effects still require their own idempotency.
 
+Read-only native and Pi delegation also persist a normalized run manifest and fsync-backed task transitions under `.sandora/tasks/runs`, paired with leases under `.sandora/tasks/leases`. Completed results and cancellation state can be restored without replay; a task found `running` after restart becomes `RECONCILE_REQUIRED` and is not executed automatically. This is local crash recovery, not distributed scheduling, artifact-integrity proof, or exactly-once execution.
+
 ## Commands
 
 Type `/` in the CLI to open command completion.

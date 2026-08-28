@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createAgentSession, providerFromEnvironment } from "../../src/runtime/native-agent-session.mjs";
 import { createDelegateSubagentsTool } from "../../src/agents/subagents.mjs";
+import { SandoraAgentManager } from "../../src/agents/manager.mjs";
 import { defineTool, NativeToolRegistry } from "../../src/tools/registry.mjs";
 import { JsonlSessionStore } from "../../src/runtime/turn-runtime.mjs";
 
@@ -162,16 +163,21 @@ test("provider configuration is explicit and supports keyless local endpoints", 
 });
 
 test("native tool registry rejects collisions and normalizes delegation", async () => {
-  const registry = new NativeToolRegistry();
-  registry.register(defineTool({ name: "one", execute: async () => "one" }));
-  assert.throws(() => registry.register(defineTool({ name: "one", execute: async () => "two" })), /already registered/);
-  const provider = { model: "fixture", async *stream({ messages }) { yield { type: "text_delta", delta: `report:${messages.at(-1).content}` }; } };
-  const delegate = createDelegateSubagentsTool({ provider, cwd: process.cwd(), maxConcurrency: 2 });
-  const result = await delegate.execute("test", { tasks: ["alpha", "beta"] });
-  assert.match(text(result), /WORKER 1 · completed/);
-  assert.match(text(result), /report:alpha/);
-  assert.match(text(result), /report:beta/);
-  assert.equal(result.details.workerCount, 2);
+  const root = await mkdtemp(join(tmpdir(), "sandora-native-delegation-"));
+  try {
+    const registry = new NativeToolRegistry();
+    registry.register(defineTool({ name: "one", execute: async () => "one" }));
+    assert.throws(() => registry.register(defineTool({ name: "one", execute: async () => "two" })), /already registered/);
+    const provider = { model: "fixture", async *stream({ messages }) { yield { type: "text_delta", delta: `report:${messages.at(-1).content}` }; } };
+    const delegate = createDelegateSubagentsTool({ provider, cwd: root, maxConcurrency: 2 });
+    const result = await delegate.execute("test", { tasks: ["alpha", "beta"] });
+    assert.match(text(result), /WORKER 1 · completed/);
+    assert.match(text(result), /report:alpha/);
+    assert.match(text(result), /report:beta/);
+    assert.equal(result.details.workerCount, 2);
+    const restored = new SandoraAgentManager({ runStoreRoot: join(root, ".sandora", "tasks", "runs"), runner: async () => { throw new Error("must not replay"); } });
+    assert.equal((await restored.restore(result.details.runId)).tasks.every(task => task.status === "completed"), true);
+  } finally { await rm(root, { recursive: true, force: true }); }
 });
 
 test("native session emits normalized usage to the TUI contract", async () => {

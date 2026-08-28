@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { join } from "node:path";
 import { Type } from "typebox";
 import { createAgentSession, DefaultResourceLoader, SessionManager } from "@earendil-works/pi-coding-agent";
 import { SandoraAgentManager, stableId } from "./manager.mjs";
@@ -12,6 +13,8 @@ export function createPiSubagentsTool({ cwd, agentDir, modelRuntime, model, thin
   const manager = new SandoraAgentManager({
     id: "pi-subagents",
     maxConcurrency: MAX_WORKERS,
+    runStoreRoot: join(cwd, ".sandora", "tasks", "runs"),
+    leaseRoot: join(cwd, ".sandora", "tasks", "leases"),
     runner: async (task, execution) => {
       const loader = new DefaultResourceLoader({
         cwd,

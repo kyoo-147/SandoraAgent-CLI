@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { FileTaskLeaseManager } from "./leases.mjs";
+import { FileTaskRunStore } from "./run-store.mjs";
 
 const DEFAULT_MAX_CONCURRENCY = 4;
 const DEFAULT_RAMP_STEP = 1;
@@ -59,7 +60,7 @@ function budgetFor(task) {
  * continue in the background and must not retain manager ownership.
  */
 export class SandoraAgentManager extends EventEmitter {
-  constructor({ runner, maxConcurrency = DEFAULT_MAX_CONCURRENCY, rampStep = DEFAULT_RAMP_STEP, cancellationTimeoutMs = DEFAULT_CANCEL_TIMEOUT_MS, id = "default", leaseRoot, leaseTtlMs, leaseManager } = {}) {
+  constructor({ runner, maxConcurrency = DEFAULT_MAX_CONCURRENCY, rampStep = DEFAULT_RAMP_STEP, cancellationTimeoutMs = DEFAULT_CANCEL_TIMEOUT_MS, id = "default", leaseRoot, leaseTtlMs, leaseManager, runStoreRoot, runStore } = {}) {
     super();
     if (typeof runner !== "function") throw new TypeError("runner must be a function");
     if (!Number.isInteger(maxConcurrency) || maxConcurrency < 1) throw new RangeError("maxConcurrency must be a positive integer");
@@ -67,6 +68,7 @@ export class SandoraAgentManager extends EventEmitter {
     if (!Number.isInteger(cancellationTimeoutMs) || cancellationTimeoutMs < 0) throw new RangeError("cancellationTimeoutMs must be a non-negative integer");
     this.runner = runner; this.maxConcurrency = maxConcurrency; this.rampStep = rampStep; this.cancellationTimeoutMs = cancellationTimeoutMs; this.id = String(id); this.runs = new Map();
     this.leases = leaseManager ?? (leaseRoot ? new FileTaskLeaseManager({ leaseRoot, ttlMs: leaseTtlMs }) : null);
+    this.runStore = runStore ?? (runStoreRoot ? new FileTaskRunStore({ root: runStoreRoot }) : null);
   }
 
   start(tasks, { runId, idempotencyKey } = {}) {
@@ -88,19 +90,39 @@ export class SandoraAgentManager extends EventEmitter {
       return existing.promise;
     }
     const run = this.#newRun(id, normalized, identity);
-    this.runs.set(id, run); run.promise = this.#schedule(run); return run.promise;
+    this.runs.set(id, run); run.storeReady = this.runStore ? this.runStore.create({ runId: id, identity, tasks: normalized }) : Promise.resolve(); run.promise = this.#schedule(run); return run.promise;
   }
 
-  #newRun(id, tasks, identity) { return { id, identity, runner: this.runner, tasks: new Map(tasks.map((task) => [task.agentId, task])), tasksByKey: new Map(tasks.map(task => [task.key, task])), queue: tasks, active: 0, unsettled: 0, limit: Math.min(this.rampStep, this.maxConcurrency), cancelled: false, controller: new AbortController(), promise: null }; }
+  #newRun(id, tasks, identity) { return { id, identity, runner: this.runner, tasks: new Map(tasks.map((task) => [task.agentId, task])), tasksByKey: new Map(tasks.map(task => [task.key, task])), queue: tasks, active: 0, unsettled: 0, limit: Math.min(this.rampStep, this.maxConcurrency), cancelled: false, controller: new AbortController(), promise: null, storeReady: Promise.resolve(), persistence: Promise.resolve(), persistenceError: null }; }
+
+  /** Hydrate a persisted run; in-flight work is never retried automatically. */
+  async restore(runId, { runner } = {}) {
+    if (!this.runStore) throw new Error("run store is not configured");
+    if (this.runs.has(runId)) return this.runs.get(runId).promise;
+    const saved = await this.runStore.read(runId); if (!saved) throw new Error(`Unknown run: ${runId}`);
+    const tasks = saved.tasks.map(task => ({ ...task, controller: undefined }));
+    const run = this.#newRun(runId, tasks, saved.identity); if (runner) run.runner = runner;
+    run.queue = tasks; this.runs.set(runId, run);
+    for (const task of tasks.filter(task => task.status === "running")) { task.status = "blocked"; task.error = "RECONCILE_REQUIRED: task was running when manager stopped"; await this.runStore.event(runId, { agentId: task.agentId, patch: { status: task.status, error: task.error } }); }
+    run.promise = this.#schedule(run); return run.promise;
+  }
+
+  async #persist(run, task) {
+    if (!this.runStore) return;
+    const snapshot = { agentId: task.agentId, patch: { status: task.status, attempts: task.attempts, error: task.error, result: task.status === "completed" ? task.result : undefined, artifacts: task.artifacts } };
+    const operation = run.persistence.then(() => run.storeReady).then(() => this.runStore.event(run.id, snapshot));
+    run.persistence = operation.catch(error => { run.persistenceError ??= error; });
+    await operation;
+  }
 
   cancel(runId, agentId) {
     const run = this.runs.get(runId); if (!run) return false;
     if (agentId) {
       const task = run.tasks.get(agentId); if (!task || ["completed", "failed", "cancelled"].includes(task.status)) return false;
-      task.status = "cancelled"; task.error = "cancelled"; task.controller?.abort(); this.#emit(run, task); return true;
+      task.status = "cancelled"; task.error = "cancelled"; task.controller?.abort(); void this.#persist(run, task).catch(() => {}); this.#emit(run, task); return true;
     }
     run.cancelled = true; run.controller.abort();
-    for (const task of run.tasks.values()) if (["queued", "blocked", "running"].includes(task.status)) { task.status = "cancelled"; task.error = "cancelled"; task.controller?.abort(); this.#emit(run, task); }
+    for (const task of run.tasks.values()) if (["queued", "blocked", "running"].includes(task.status)) { task.status = "cancelled"; task.error = "cancelled"; task.controller?.abort(); void this.#persist(run, task).catch(() => {}); this.#emit(run, task); }
     return true;
   }
 
@@ -128,6 +150,7 @@ export class SandoraAgentManager extends EventEmitter {
   }
 
   async #schedule(run) {
+    await run.storeReady;
     while (true) {
       this.#refreshDependencies(run);
       if (!run.queue.some(task => task.status === "queued") && !run.active) break;
@@ -135,6 +158,8 @@ export class SandoraAgentManager extends EventEmitter {
       if (!next.length) { if (run.active) await new Promise((resolve) => this.once(`idle:${run.id}`, resolve)); else break; continue; }
       await Promise.all(next.map((task) => this.#execute(run, task))); run.limit = Math.min(this.maxConcurrency, run.limit + this.rampStep);
     }
+    await run.persistence;
+    if (run.persistenceError) throw new Error(`RECONCILE_REQUIRED: durable run state failed: ${run.persistenceError.message}`);
     const status = this.status(run.id); this.emit("complete", status); return status;
   }
 
@@ -143,8 +168,8 @@ export class SandoraAgentManager extends EventEmitter {
       if (task.status !== "blocked" || task.error) continue;
       const dependencies = task.dependencies.map(key => run.tasksByKey.get(key));
       const failed = dependencies.find(dependency => ["failed", "cancelled"].includes(dependency.status) || (dependency.status === "blocked" && dependency.error));
-      if (failed) { task.error = `dependency did not complete: ${failed.key} (${failed.status})`; this.#emit(run, task); }
-      else if (dependencies.every(dependency => dependency.status === "completed")) { task.status = "queued"; this.#emit(run, task); }
+      if (failed) { task.error = `dependency did not complete: ${failed.key} (${failed.status})`; void this.#persist(run, task).catch(() => {}); this.#emit(run, task); }
+      else if (dependencies.every(dependency => dependency.status === "completed")) { task.status = "queued"; void this.#persist(run, task).catch(() => {}); this.#emit(run, task); }
     }
   }
 
@@ -160,7 +185,7 @@ export class SandoraAgentManager extends EventEmitter {
       this.#emit(run, task);
       return;
     }
-    task.status = "running"; task.attempts += 1; run.active += 1; run.unsettled += 1; this.#emit(run, task);
+    task.status = "running"; task.attempts += 1; await this.#persist(run, task); run.active += 1; run.unsettled += 1; this.#emit(run, task);
     const controller = new AbortController(); task.controller = controller;
     const abort = () => controller.abort(); run.controller.signal.addEventListener("abort", abort, { once: true });
     const budget = budgetFor(task); const execution = Object.freeze({ agentId: task.agentId, runId: run.id, fenceToken: lease?.fenceToken, config: cloneAndFreeze(task.config ?? {}), context: cloneAndFreeze(task.context ?? {}), tools: cloneAndFreeze(task.tools ?? []), model: task.model, budget: cloneAndFreeze(budget), signal: controller.signal });
@@ -178,6 +203,7 @@ export class SandoraAgentManager extends EventEmitter {
         try { await this.leases.transition(lease, task.status.toUpperCase(), { terminalAt: new Date().toISOString() }); }
         catch (error) { task.status = "failed"; task.result = undefined; task.artifacts = []; task.error = error instanceof Error ? error.message : String(error); }
       }
+      await this.#persist(run, task);
     } finally {
       clearTimeout(timer); run.active -= 1; run.unsettled -= 1; run.controller.signal.removeEventListener("abort", abort); task.controller = undefined; this.#emit(run, task); this.emit(`idle:${run.id}`);
     }
