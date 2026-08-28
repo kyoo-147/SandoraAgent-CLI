@@ -71,7 +71,6 @@ export async function createAgentSession({
       bus.emit("agent", { type: "message.start", role: "assistant" });
       try {
         await store.append({ type: "model.started", sessionId, turnId, model: provider.model || "custom" });
-        const beforeRun = messages.length;
         const result = await runTurn({
           provider,
           messages,
@@ -79,6 +78,8 @@ export async function createAgentSession({
           maxSteps,
           signal: controller.signal,
           bus,
+          onMessage: message => store.appendMessage(message),
+          onPartial: message => store.append({ type: "assistant.partial", sessionId, turnId, status: "INTERRUPTED", content: message.content.slice(0, 20_000), contentBytes: Buffer.byteLength(message.content), truncated: message.content.length > 20_000 }),
           executeTool: async (name, args, context) => {
             const toolExecutionId = randomUUID();
             await store.append({ type: "tool.started", sessionId, turnId, toolExecutionId, name, step: context.step });
@@ -94,7 +95,6 @@ export async function createAgentSession({
             } finally { bus.emit("tool_end", { name }); }
           },
         });
-        for (const message of result.messages.slice(beforeRun)) await store.appendMessage(message);
         await store.append({ type: "turn.completed", sessionId, turnId, usage: result.usage });
         bus.emit("agent", { type: "message.end", role: "assistant", usage: { ...result.usage, cost: 0 } });
         return result;

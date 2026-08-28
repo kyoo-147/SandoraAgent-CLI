@@ -20,6 +20,22 @@ export function assertProvider(provider) {
   return provider;
 }
 
+function parseSseRow(row) {
+  if (!row.startsWith("data:")) return { done: false, events: [] };
+  const value = row.slice(5).trim();
+  if (value === "[DONE]") return { done: true, events: [] };
+  let payload;
+  try { payload = JSON.parse(value); } catch { return { done: false, events: [] }; }
+  const events = [];
+  if (payload.usage) events.push({ type: "usage", usage: payload.usage });
+  const choice = payload.choices?.[0];
+  const delta = choice?.delta || {};
+  if (delta.content) events.push({ type: "text_delta", delta: delta.content });
+  for (const call of delta.tool_calls || []) events.push({ type: "tool_call_delta", index: call.index || 0, id: call.id, name: call.function?.name, arguments: call.function?.arguments || "" });
+  if (choice?.finish_reason) events.push({ type: "finish", reason: choice.finish_reason, usage: payload.usage });
+  return { done: false, events };
+}
+
 export class OpenAICompatibleProvider {
   constructor({ apiKey, baseUrl = "https://api.openai.com/v1", model, fetchImpl = globalThis.fetch, headers = {}, includeUsage = true } = {}) {
     if (!model) throw new TypeError("model is required");
@@ -51,18 +67,16 @@ export class OpenAICompatibleProvider {
       const rows = buffer.split(/\r?\n/);
       buffer = rows.pop() || "";
       for (const row of rows) {
-        if (!row.startsWith("data:")) continue;
-        const value = row.slice(5).trim();
-        if (value === "[DONE]") return;
-        let payload;
-        try { payload = JSON.parse(value); } catch { continue; }
-        if (payload.usage) yield { type: "usage", usage: payload.usage };
-        const choice = payload.choices?.[0];
-        const delta = choice?.delta || {};
-        if (delta.content) yield { type: "text_delta", delta: delta.content };
-        for (const call of delta.tool_calls || []) yield { type: "tool_call_delta", index: call.index || 0, id: call.id, name: call.function?.name, arguments: call.function?.arguments || "" };
-        if (choice?.finish_reason) yield { type: "finish", reason: choice.finish_reason, usage: payload.usage };
+        const parsed = parseSseRow(row);
+        if (parsed.done) return;
+        for (const event of parsed.events) yield event;
       }
+    }
+    buffer += decoder.decode();
+    for (const row of buffer.split(/\r?\n/)) {
+      const parsed = parseSseRow(row);
+      if (parsed.done) return;
+      for (const event of parsed.events) yield event;
     }
   }
 }
@@ -70,7 +84,7 @@ export class OpenAICompatibleProvider {
 function throwIfAborted(signal) { if (signal?.aborted) throw signal.reason || new Error("Operation aborted"); }
 function sleep(ms) { return new Promise((resolveSleep) => setTimeout(resolveSleep, ms)); }
 
-export async function runTurn({ provider, messages = [], tools = [], executeTool, maxSteps = 8, maxRetries = 2, signal, bus = new EventBus(), retryDelayMs = 0 } = {}) {
+export async function runTurn({ provider, messages = [], tools = [], executeTool, onMessage, onPartial, maxSteps = 8, maxRetries = 2, signal, bus = new EventBus(), retryDelayMs = 0 } = {}) {
   assertProvider(provider);
   if (!Array.isArray(messages)) throw new TypeError("messages must be an array");
   const usage = { input: 0, output: 0, cacheRead: 0 };
@@ -108,13 +122,18 @@ export async function runTurn({ provider, messages = [], tools = [], executeTool
         if (attempt < maxRetries) { if (retryDelayMs) await sleep(retryDelayMs); }
       }
     }
-    if (lastError) throw lastError;
+    if (lastError) {
+      const partialText = text.join("");
+      if (partialText && onPartial) await onPartial({ role: "assistant", content: partialText, status: "INTERRUPTED" });
+      throw lastError;
+    }
     const assistant = { role: "assistant", content: text.join("") || null };
     if (calls.size) assistant.tool_calls = [...calls.values()].map((call) => {
       if (!call.id || !call.name) throw new Error("Provider returned an incomplete tool call");
       return { id: call.id, type: "function", function: { name: call.name, arguments: call.arguments } };
     });
     messages.push(assistant);
+    if (onMessage) await onMessage(assistant);
     bus.emit("assistant", { message: assistant, step });
     if (!calls.size) return { messages, message: assistant, steps: step + 1, usage, bus };
     if (typeof executeTool !== "function") throw new Error("Tool calls require executeTool");
@@ -124,7 +143,9 @@ export async function runTurn({ provider, messages = [], tools = [], executeTool
       try { args = JSON.parse(call.arguments || "{}"); } catch { throw new Error(`Invalid arguments for tool ${call.name}`); }
       const result = await executeTool(call.name, args, { signal, step, toolCallId: call.id });
       const content = typeof result === "string" ? result : JSON.stringify(result);
-      messages.push({ role: "tool", tool_call_id: call.id, content });
+      const toolMessage = { role: "tool", tool_call_id: call.id, content };
+      messages.push(toolMessage);
+      if (onMessage) await onMessage(toolMessage);
       bus.emit("tool_result", { call, content, step });
     }
     if (step === maxSteps - 1) throw new Error(`Maximum turn steps exceeded (${maxSteps})`);

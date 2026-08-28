@@ -73,15 +73,22 @@ export async function runBounded(command, args, { cwd, signal, timeoutMs = LIMIT
   if (signal?.aborted) return textResult("aborted before start", { aborted: true, timedOut: false });
   return new Promise((resolvePromise) => {
     const child = spawn(command, args, { cwd: root, env: filteredEnvironment(), stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
-    let text = "", reason = "", settled = false, hardTimer = null;
+    let text = "", reason = "", settled = false, hardTimer = null, childCloseCode, cleanupCode;
     const append = (chunk) => { text = `${text}${chunk}`; if (text.length > LIMITS.maxOutputBytes) text = `${text.slice(0, LIMITS.maxOutputBytes)}\n[output truncated]`; };
     const finish = (value) => { if (!settled) { settled = true; clearTimeout(timer); clearTimeout(hardTimer); signal?.removeEventListener("abort", abort); resolvePromise(value); } };
+    const finishStopped = () => {
+      if (childCloseCode === undefined || (process.platform === "win32" && cleanupCode === undefined)) return;
+      const cleanupReported = process.platform === "win32" ? cleanupCode === 0 : true;
+      const cleanupVerified = false;
+      const cleanupNote = cleanupReported ? `; ${process.platform === "win32" ? "taskkill" : "termination signal"} reported success but tree absence was not independently verified` : "; process-tree cleanup was not verified";
+      finish(textResult(`${reason}; exit ${childCloseCode ?? "unknown"}${cleanupNote}\n${text.trim()}`, { code: childCloseCode, aborted: reason === "aborted", timedOut: reason.startsWith("timed out"), cleanupReported, cleanupVerified }));
+    };
     const stop = () => {
       if (hardTimer) return;
       if (process.platform === "win32") {
         const killer = spawn("taskkill", ["/pid", String(child.pid), "/t", "/f"], { stdio: "ignore", windowsHide: true });
-        killer.on("error", error => append(`\nprocess-tree cleanup failed to start: ${error.message}`));
-        killer.on("close", code => { if (code !== 0) append(`\nprocess-tree cleanup exited ${code}`); });
+        killer.on("error", error => { append(`\nprocess-tree cleanup failed to start: ${error.message}`); cleanupCode = null; finishStopped(); });
+        killer.on("close", code => { if (cleanupCode === undefined) cleanupCode = code; if (code !== 0) append(`\nprocess-tree cleanup exited ${code}`); finishStopped(); });
       } else {
         child.kill("SIGTERM");
         const force = setTimeout(() => { if (child.exitCode === null) child.kill("SIGKILL"); }, 1_000); force.unref?.();
@@ -97,7 +104,7 @@ export async function runBounded(command, args, { cwd, signal, timeoutMs = LIMIT
     signal?.addEventListener("abort", abort, { once: true });
     child.stdout.on("data", append); child.stderr.on("data", append);
     child.on("error", (error) => finish(textResult(`${reason || "failed to start"}: ${error.message}`)));
-    child.on("close", (code) => finish(textResult(`${reason ? `${reason}; ` : ""}exit ${code ?? "unknown"}\n${text.trim()}`, { code, aborted: reason === "aborted", timedOut: reason.startsWith("timed out"), cleanupVerified: reason ? true : undefined })));
+    child.on("close", (code) => { if (!reason) finish(textResult(`exit ${code ?? "unknown"}\n${text.trim()}`, { code, aborted: false, timedOut: false })); else { childCloseCode = code ?? null; finishStopped(); } });
   });
 }
 export function filteredEnvironment(env = process.env) {

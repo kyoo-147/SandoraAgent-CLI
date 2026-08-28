@@ -58,6 +58,8 @@ test("shell filters credentials and caps output", async () => {
   assert.match(capped.content[0].text, /output truncated/);
   const timed = await runBounded(process.execPath, ["-e", "setTimeout(() => {}, 1000)"], { cwd: root, timeoutMs: 20 });
   assert.equal(timed.details.timedOut, true);
+  assert.equal(timed.details.cleanupReported, true);
+  assert.equal(timed.details.cleanupVerified, false);
 });
 
 test("git observation is non-mutating and abort is reported", async () => {

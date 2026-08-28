@@ -56,6 +56,46 @@ test("native session streams, executes tools, persists, and resumes", async () =
   }
 });
 
+test("native session retains completed tool turns across provider failure and restart", async () => {
+  const root = await mkdtemp(join(tmpdir(), "sandora-native-failed-turn-"));
+  const sessionPath = join(root, "session.jsonl");
+  let sideEffects = 0;
+  let attempts = 0;
+  const registry = new NativeToolRegistry();
+  registry.register(defineTool({ name: "mutate", description: "mutate", parameters: { type: "object" }, execute: async () => { sideEffects += 1; return { content: [{ type: "text", text: "mutation complete" }] }; } }));
+  const failingProvider = { model: "fixture", async *stream({ messages }) {
+    attempts += 1;
+    if (messages.at(-1)?.role === "tool") {
+      yield { type: "text_delta", delta: "partial answer" };
+      throw new Error("forced provider failure");
+    }
+    yield { type: "tool_call_delta", index: 0, id: "mutate-call", name: "mutate", arguments: "{}" };
+  } };
+  try {
+    const session = await createAgentSession({ cwd: root, sessionPath, provider: failingProvider, registry });
+    await assert.rejects(session.prompt("change it"), /forced provider failure/);
+    assert.equal(sideEffects, 1);
+    const persisted = await new JsonlSessionStore(sessionPath).resume();
+    assert.deepEqual(persisted.map(message => message.role), ["user", "assistant", "tool"]);
+    assert.equal(persisted[1].tool_calls[0].function.name, "mutate");
+    assert.equal(persisted[2].content, "mutation complete");
+    const interrupted = (await new JsonlSessionStore(sessionPath).replay()).find(event => event.type === "assistant.partial");
+    assert.deepEqual({ status: interrupted.status, content: interrupted.content, truncated: interrupted.truncated }, { status: "INTERRUPTED", content: "partial answer", truncated: false });
+    session.dispose();
+
+    const restarted = await createAgentSession({ cwd: root, sessionPath, provider: { model: "fixture", async *stream({ messages }) {
+      assert.ok(messages.some(message => message.role === "tool"), "restarted context must retain the tool result");
+      yield { type: "text_delta", delta: "recovered" };
+    } }, registry: new NativeToolRegistry() });
+    assert.equal((await restarted.prompt("continue")).message.content, "recovered");
+    assert.equal(sideEffects, 1, "restart must not replay the completed side effect");
+    assert.equal(attempts, 2);
+    restarted.dispose();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("native session aborts an active provider stream", async () => {
   const root = await mkdtemp(join(tmpdir(), "sandora-native-abort-"));
   const provider = { model: "fixture", async *stream({ signal }) {

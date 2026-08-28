@@ -32,6 +32,14 @@ test("OpenAI-compatible provider parses streamed text and tool-call deltas", asy
   assert.equal(events[2].arguments, '"x"}');
 });
 
+test("OpenAI-compatible provider flushes a final SSE row without a trailing newline", async () => {
+  const payload = JSON.stringify({ choices: [{ delta: { content: "tail" }, finish_reason: "stop" }] });
+  const provider = new OpenAICompatibleProvider({ model: "test", fetchImpl: async () => new Response(new TextEncoder().encode(`data: ${payload}`)) });
+  const events = [];
+  for await (const event of provider.stream({ messages: [] })) events.push(event);
+  assert.deepEqual(events, [{ type: "text_delta", delta: "tail" }, { type: "finish", reason: "stop", usage: undefined }]);
+});
+
 test("turn loop executes tools, emits events, and retries stream failures", async () => {
   let attempts = 0;
   const bus = new EventBus();
