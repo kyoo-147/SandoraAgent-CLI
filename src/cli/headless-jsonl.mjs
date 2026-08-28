@@ -2,6 +2,7 @@ import process from "node:process";
 import { createInterface } from "node:readline";
 import { createSandoraSession } from "../runtime/create-session.mjs";
 import { createCodingTools } from "../tools/coding-tools.mjs";
+import { ApprovalStore } from "../tools/approvals.mjs";
 import { createGitTools } from "../git/tools.mjs";
 import { browserTools } from "../browser/tools.mjs";
 
@@ -13,6 +14,7 @@ const configuredOutputLimit = Number(process.env.SANDORA_JSONL_MAX_OUTPUT_BYTES 
 const MAX_QUEUED_OUTPUT_BYTES = Number.isSafeInteger(configuredOutputLimit) && configuredOutputLimit >= 1024 ? configuredOutputLimit : 4 * 1024 * 1024;
 
 const cwd = process.cwd();
+const approvals = new ApprovalStore({ cwd });
 const systemPrompt = [
   "You are Sandora Agent, an autonomous coding and research agent.",
   "Inspect evidence, make bounded workspace changes, run relevant verification, diagnose recoverable failures, and report verified results honestly.",
@@ -108,6 +110,8 @@ async function handleMessage(message) {
   }
   if (message.type === "history") return respond(id, true, { messages: session.getDisplayMessages?.() || [] });
   if (message.type === "status") return respond(id, true, { runtime: session.runtime, sessionId: session.sessionId, model: session.model?.id || null, thinkingLevel: session.thinkingLevel || null, activeRequestId: active?.id || null, contextUsage: session.getContextUsage?.() || null });
+  if (message.type === "approval_create") return respond(id, true, { approval: await approvals.create(message) });
+  if (message.type === "approval_list") return respond(id, true, { approvals: await approvals.list() });
   if (message.type === "shutdown") {
     shuttingDown = true;
     const running = active;

@@ -78,6 +78,13 @@ test("headless JSONL streams normalized events and a correlated final response",
     assert.equal(history.at(-2).role, "user");
     assert.equal(history.at(-1).text, "HEADLESS_OK");
     assert.deepEqual(client.messages.map(message => message.sequence), client.messages.map(message => message.sequence).slice().sort((a, b) => a - b));
+    client.send({ id: "approval-create-1", type: "approval_create", toolName: "git_merge", args: { branch: "feature" }, authorityVariable: "SANDORA_ALLOW_LOCAL_MERGE", decision: "ALLOW", expiresAt: new Date(Date.now() + 60_000).toISOString(), maxUses: 1 });
+    await waitFor(() => client.messages.some(message => message.requestId === "approval-create-1"), "approval create response missing");
+    assert.match(client.messages.find(message => message.requestId === "approval-create-1").result.approval.reference, /^[a-f0-9]{64}$/);
+    client.send({ id: "approval-list-1", type: "approval_list" });
+    await waitFor(() => client.messages.some(message => message.requestId === "approval-list-1"), "approval list response missing");
+    assert.equal(client.messages.find(message => message.requestId === "approval-list-1").result.approvals.length, 1);
+    client.send({ id: "shutdown-1", type: "shutdown" });
     client.send({ id: "shutdown-1", type: "shutdown" });
     assert.deepEqual(await client.exit, { code: 0, signal: null });
     assert.equal(provider.seen, true);

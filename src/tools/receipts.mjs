@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, open, readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { ApprovalStore } from "./approvals.mjs";
 import { defineTool, toolText } from "./registry.mjs";
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
@@ -22,7 +23,8 @@ export function canonicalInputSha256(value) {
 }
 
 function authorityFor(toolName, args) {
-  const rules = [[/^browser_click$/, "SANDORA_ALLOW_BROWSER_SUBMIT"], [/^browser_connect$/, "SANDORA_ALLOW_EXISTING_BROWSER_PROFILE"], [/^browser_launch$/, (args?.endpoint || process.env.SANDORA_CDP_URL) ? "SANDORA_ALLOW_EXISTING_BROWSER_PROFILE" : null], [/^worker_integrate$/, "SANDORA_ALLOW_WORKER_INTEGRATION"], [/^git_merge$/, "SANDORA_ALLOW_LOCAL_MERGE"], [/^github_pr_merge$/, "SANDORA_ALLOW_PR_MERGE"], [/^workspace_shell$/, "SANDORA_ALLOW_PACKAGE_SCRIPTS"]];
+  const remote = value => { try { const url = new URL(value); return !["127.0.0.1", "localhost", "::1"].includes(url.hostname); } catch { return false; } };
+  const rules = [[/^browser_click$/, "SANDORA_ALLOW_BROWSER_SUBMIT"], [/^browser_connect$/, (args?.endpoint || process.env.SANDORA_CDP_URL) && remote(args?.endpoint || process.env.SANDORA_CDP_URL) ? "SANDORA_ALLOW_REMOTE_CDP" : "SANDORA_ALLOW_EXISTING_BROWSER_PROFILE"], [/^browser_launch$/, (args?.endpoint || process.env.SANDORA_CDP_URL) ? (remote(args?.endpoint || process.env.SANDORA_CDP_URL) ? "SANDORA_ALLOW_REMOTE_CDP" : "SANDORA_ALLOW_EXISTING_BROWSER_PROFILE") : null], [/^browser_navigate$/, "SANDORA_ALLOW_BROWSER_CROSS_ORIGIN"], [/^worker_integrate$/, "SANDORA_ALLOW_WORKER_INTEGRATION"], [/^git_merge$/, "SANDORA_ALLOW_LOCAL_MERGE"], [/^github_pr_merge$/, "SANDORA_ALLOW_PR_MERGE"], [/^workspace_shell$/, "SANDORA_ALLOW_PACKAGE_SCRIPTS"]];
   const variable = rules.find(([pattern]) => pattern.test(toolName))?.[1];
   return variable ? { variable, granted: process.env[variable] === "1" } : { variable: null, granted: null };
 }
@@ -49,6 +51,14 @@ function validateCommon(record, expected) {
   if (record.receiptId !== expected.receiptId) throw new Error("TOOL_RECEIPT_UNKNOWN: receipt identity seal is invalid");
   if (!exactKeys(record.approval, ["status", "reference"]) || typeof record.approval.status !== "string" || !exactKeys(record.authority, ["variable", "granted"]) || ![null, true, false].includes(record.authority.granted) || record.preflight !== "DELEGATED_TO_TOOL" || record.enforcement !== "APPLICATION_POLICY" || record.sandbox !== "UNAVAILABLE_APPLICATION_ONLY" || record.durability !== "FILE_FSYNC") throw new Error("TOOL_RECEIPT_UNKNOWN: receipt policy fields are invalid");
 }
+function validateClaim(record, expected) {
+  const keys = [...Object.keys(expected), "state", "claimedAt", "recordSha256"];
+  if (!exactKeys(record, keys) || !validSeal(record) || record.state !== "CLAIMED" || !Number.isFinite(Date.parse(record.claimedAt))) throw new Error("TOOL_RECEIPT_UNKNOWN: execution claim schema or seal is invalid");
+  if (record.receiptVersion !== 2 || record.attempt !== 1 || typeof record.ownerToken !== "string" || !record.ownerToken || record.idempotencyKey !== expected.idempotencyKey || record.sessionId !== expected.sessionId || record.runtime !== expected.runtime || record.toolCallId !== expected.toolCallId) throw new Error("TOOL_RECEIPT_UNKNOWN: execution claim identity is invalid");
+  if (record.toolName !== expected.toolName || record.inputSha256 !== expected.inputSha256 || record.receiptId !== expected.receiptId) throw new Error("TOOL_RECEIPT_COLLISION: tool call identity was reused with different input");
+  return record;
+}
+
 function validateStart(record, expected) {
   const keys = [...Object.keys(expected), "state", "outcome", "startedAt", "recordSha256"];
   if (!exactKeys(record, keys) || !validSeal(record) || record.state !== "STARTED" || record.outcome !== "PENDING" || !Number.isFinite(Date.parse(record.startedAt))) throw new Error("TOOL_RECEIPT_UNKNOWN: STARTED receipt schema or seal is invalid");
@@ -73,6 +83,7 @@ export class ToolReceiptStore {
     this.sessionId = sessionId;
     this.runtime = runtime;
     this.directory = join(cwd, ".sandora", "receipts", sessionId);
+    this.approvals = new ApprovalStore({ cwd });
   }
 
   async execute({ toolCallId, toolName, args, invoke }) {
@@ -81,12 +92,33 @@ export class ToolReceiptStore {
     const idempotencyKey = `${this.sessionId}:${toolCallId}`;
     const receiptId = createHash("sha256").update(`${idempotencyKey}:${toolName}:${inputSha256}`).digest("hex");
     const basePath = join(this.directory, createHash("sha256").update(idempotencyKey).digest("hex"));
+    const claimPath = `${basePath}.claim.json`;
     const startedPath = `${basePath}.started.json`;
     const terminalPath = `${basePath}.terminal.json`;
     const ownerToken = randomUUID();
-    const common = { receiptVersion: 2, receiptId, idempotencyKey, runtime: this.runtime, sessionId: this.sessionId, toolCallId, attempt: 1, toolName, inputSha256, ownerToken, approval: { status: "NOT_RECORDED", reference: null }, authority: authorityFor(toolName, args), preflight: "DELEGATED_TO_TOOL", enforcement: "APPLICATION_POLICY", sandbox: "UNAVAILABLE_APPLICATION_ONLY", durability: "FILE_FSYNC" };
+    const authority = authorityFor(toolName, args);
+    const identity = { receiptVersion: 2, receiptId, idempotencyKey, runtime: this.runtime, sessionId: this.sessionId, toolCallId, attempt: 1, toolName, inputSha256, ownerToken };
+    const claim = sealRecord({ ...identity, state: "CLAIMED", claimedAt: new Date().toISOString() });
+    await mkdir(dirname(claimPath), { recursive: true });
+    try { await durableWriteExclusive(claimPath, claim); }
+    catch (error) {
+      if (error.code !== "EEXIST") throw error;
+      try {
+        validateClaim(JSON.parse(await readFile(claimPath, "utf8")), identity);
+        const previous = JSON.parse(await readFile(startedPath, "utf8"));
+        const expected = Object.fromEntries(Object.entries(previous).filter(([key]) => !["state", "outcome", "startedAt", "recordSha256"].includes(key)));
+        validateStart(previous, expected);
+        validateTerminal(JSON.parse(await readFile(terminalPath, "utf8")), expected, previous);
+      } catch (readError) {
+        if (readError.code === "ENOENT") throw new Error("TOOL_RECEIPT_UNKNOWN: prior execution claim has no complete receipt; automatic replay is blocked");
+        if (/TOOL_RECEIPT_(UNKNOWN|COLLISION)/.test(readError.message)) throw readError;
+        throw new Error(`TOOL_RECEIPT_UNKNOWN: claimed receipt cannot be read: ${readError.message}`);
+      }
+      throw new Error("TOOL_RECEIPT_DUPLICATE: terminal execution already exists; automatic replay is blocked");
+    }
+    const approval = await this.approvals.consume({ toolName, inputSha256, authorityVariable: authority.variable });
+    const common = { ...identity, approval, authority, preflight: "DELEGATED_TO_TOOL", enforcement: "APPLICATION_POLICY", sandbox: "UNAVAILABLE_APPLICATION_ONLY", durability: "FILE_FSYNC" };
     const started = sealRecord({ ...common, state: "STARTED", outcome: "PENDING", startedAt: new Date().toISOString() });
-    await mkdir(dirname(startedPath), { recursive: true });
     try { await durableWriteExclusive(startedPath, started); }
     catch (error) {
       if (error.code !== "EEXIST") throw error;
@@ -98,6 +130,11 @@ export class ToolReceiptStore {
       throw new Error("TOOL_RECEIPT_DUPLICATE: terminal execution already exists; automatic replay is blocked");
     }
     let result;
+    if (approval.status !== "NOT_REQUIRED" && approval.status !== "APPROVED") {
+      const error = Object.assign(new Error(`Explicit approval ${approval.status.toLowerCase()} for ${toolName}`), { code: `SANDORA_APPROVAL_${approval.status}` });
+      try { const { recordSha256: priorRecordSha256, ...startedFields } = started; await durableWriteExclusive(terminalPath, sealRecord({ ...startedFields, priorRecordSha256, state: "FAILED", outcome: "BLOCKED", terminalAt: new Date().toISOString(), errorCode: error.code, errorSha256: createHash("sha256").update(error.message).digest("hex") })); } catch (receiptError) { throw new AggregateError([error, receiptError], "Approval blocked and terminal receipt persistence failed"); }
+      throw error;
+    }
     try { result = await invoke(); }
     catch (error) {
       const message = error instanceof Error ? error.message : String(error);
