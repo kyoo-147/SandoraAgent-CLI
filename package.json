@@ -2,17 +2,21 @@
   "name": "navin-terminal",
   "version": "0.1.0",
   "private": true,
+  "workspaces": ["apps/*", "packages/*"],
   "type": "module",
+  "engines": { "node": ">=22.19.0" },
   "description": "Sandora autonomous coding and research agent",
   "scripts": {
     "start": "node start.mjs",
     "chat": "node start.mjs",
-    "check": "node --check start.mjs && node --check src/subagents.mjs && node --check src/worker-tools.mjs && node --check src/agent-manager.mjs && node --check src/runtime.mjs && node --check src/tool-registry.mjs && node --check src/native-agent-session.mjs && node --check src/plugin-host.mjs && node --check src/browser-tools.mjs && node --check src/agent-session.mjs && node --check src/event-reducer.mjs",
+    "jsonl": "node src/cli/headless-jsonl.mjs",
+    "check": "node scripts/check.mjs",
     "test": "node --test",
     "qa": "node scripts/qa.mjs",
     "qa:deps": "npm audit --omit=dev --audit-level=high"
   },
   "dependencies": {
+    "@earendil-works/pi-coding-agent": "0.84.3",
     "pngjs": "^7.0.0",
     "typebox": "^1.3.19"
   }
