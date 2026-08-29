@@ -2,6 +2,7 @@
   "name": "navin-terminal",
   "version": "0.1.0",
   "private": true,
+  "workspaces": ["apps/*", "packages/*"],
   "type": "module",
   "engines": { "node": ">=22.19.0" },
   "description": "Sandora autonomous coding and research agent",
