@@ -9,7 +9,7 @@
     "start": "node start.mjs",
     "chat": "node start.mjs",
     "jsonl": "node src/cli/headless-jsonl.mjs",
-    "check": "node --check start.mjs && node --check src/cli/terminal-app.mjs && node --check src/cli/headless-jsonl.mjs && node --check src/runtime/agent-session.mjs && node --check src/runtime/create-session.mjs && node --check src/runtime/pi-agent-session.mjs && node --check src/runtime/event-reducer.mjs && node --check src/runtime/events.mjs && node --check src/runtime/native-agent-session.mjs && node --check src/runtime/turn-runtime.mjs && node --check src/tools/registry.mjs && node --check src/tools/receipts.mjs && node --check src/tools/approvals.mjs && node --check scripts/receipt-worker.mjs && node --check scripts/session-store-worker.mjs && node --check src/tools/coding-tools.mjs && node --check src/agents/manager.mjs && node --check src/agents/run-store.mjs && node --check src/agents/leases.mjs && node --check src/agents/pi-subagents.mjs && node --check src/agents/pi-writable-workers.mjs && node --check src/agents/subagents.mjs && node --check src/agents/worker-tools.mjs && node --check src/plugins/host.mjs && node --check src/plugins/runtime.mjs && node --check src/git/tools.mjs && node --check src/git/worktrees.mjs && node --check src/browser/tools.mjs",
+    "check": "node scripts/check.mjs",
     "test": "node --test",
     "qa": "node scripts/qa.mjs",
     "qa:deps": "npm audit --omit=dev --audit-level=high"

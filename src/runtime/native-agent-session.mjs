@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { EventBus, JsonlSessionStore, OpenAICompatibleProvider, runTurn } from "./turn-runtime.mjs";
 import { NativeToolRegistry, openAiTools, toolText, validateToolArgs } from "../tools/registry.mjs";
 import { createDelegateSubagentsTool } from "../agents/subagents.mjs";
+import { resolveWorkerAdapterDescriptor } from "../agents/native-worker-runner.mjs";
 import { assertAgentSession, normalizeDisplayMessages } from "./agent-session.mjs";
 import { compactContext, measureContext, validateCompactionProvenance } from "./context-budget.mjs";
 import { canonicalInputSha256, ToolReceiptStore } from "../tools/receipts.mjs";
@@ -96,9 +97,14 @@ export async function createAgentSession({
   maxSteps = 12,
   maxContextBytes,
   contextReserveBytes = 0,
+  processMode = process.env.SANDORA_NATIVE_WORKER_MODE === "process",
+  workerAdapter = process.env.SANDORA_NATIVE_WORKER_ADAPTER,
 } = {}) {
   if (maxContextBytes !== undefined && (!Number.isSafeInteger(maxContextBytes) || maxContextBytes <= 0)) throw new TypeError("maxContextBytes must be a positive integer");
   if (!Number.isSafeInteger(contextReserveBytes) || contextReserveBytes < 0 || (maxContextBytes !== undefined && contextReserveBytes >= maxContextBytes)) throw new TypeError("contextReserveBytes must be a non-negative integer below maxContextBytes");
+  if (processMode && (typeof workerAdapter !== "string" || !workerAdapter)) throw new TypeError("native worker process mode requires SANDORA_NATIVE_WORKER_ADAPTER or workerAdapter");
+  if (!processMode && workerAdapter !== undefined) throw new TypeError("workerAdapter requires native worker process mode");
+  const workerAdapterDescriptor = processMode ? await resolveWorkerAdapterDescriptor(cwd, workerAdapter) : null;
   const store = new JsonlSessionStore(sessionPath);
   const bus = new EventBus();
   const events = await store.replay();
@@ -114,14 +120,18 @@ export async function createAgentSession({
   const persistedContextConfig = events.findLast(event => ["session.created", "session.resumed"].includes(event.type) && event.payload?.maxContextBytes !== undefined);
   const persistedMaxContextBytes = persistedContextConfig?.payload?.maxContextBytes;
   const persistedContextReserveBytes = persistedContextConfig?.payload?.contextReserveBytes;
-  if (existingSession && ((persistedPromptSha256 !== undefined && persistedPromptSha256 !== systemPromptSha256) || (persistedModel !== undefined && persistedModel !== modelId) || (persistedMaxContextBytes !== undefined && persistedMaxContextBytes !== maxContextBytes) || (persistedMaxContextBytes !== undefined && persistedContextReserveBytes !== contextReserveBytes))) throw new Error("native session identity does not match persisted session");
+  const workerMode = processMode ? "process" : "in-process";
+  const workerAdapterSha256 = workerAdapterDescriptor?.adapterContentSha256 ?? null;
+  const workerAdapterPathSha256 = workerAdapterDescriptor?.adapterPathSha256 ?? null;
+  const persistedWorkerConfig = events.findLast(event => ["session.created", "session.resumed"].includes(event.type) && event.payload?.workerMode !== undefined);
+  if (existingSession && ((persistedPromptSha256 !== undefined && persistedPromptSha256 !== systemPromptSha256) || (persistedModel !== undefined && persistedModel !== modelId) || (persistedMaxContextBytes !== undefined && persistedMaxContextBytes !== maxContextBytes) || (persistedMaxContextBytes !== undefined && persistedContextReserveBytes !== contextReserveBytes) || (persistedWorkerConfig && (persistedWorkerConfig.payload.workerMode !== workerMode || persistedWorkerConfig.payload.workerAdapterSha256 !== workerAdapterSha256 || persistedWorkerConfig.payload.workerAdapterPathSha256 !== workerAdapterPathSha256)))) throw new Error("native session identity does not match persisted session");
   const sessionId = existingSession?.payload?.sessionId || randomUUID();
   const receipts = new ToolReceiptStore({ cwd, sessionId, runtime: "native" });
-  await store.append({ type: existingSession ? "session.resumed" : "session.created", sessionId, runtime: "sandora-native", model: modelId, systemPromptSha256, ...(maxContextBytes === undefined ? {} : { maxContextBytes, contextReserveBytes }) });
+  await store.append({ type: existingSession ? "session.resumed" : "session.created", sessionId, runtime: "sandora-native", model: modelId, systemPromptSha256, workerMode, workerAdapterSha256, workerAdapterPathSha256, ...(maxContextBytes === undefined ? {} : { maxContextBytes, contextReserveBytes }) });
   const modelSystem = withMessageId({ role: "system", content: systemPrompt }, "system-prompt");
   const messages = [modelSystem, ...hydrateContext(hydratedEvents, systemPrompt)];
   const historyMessages = [withMessageId({ role: "system", content: systemPrompt }, "system-prompt"), ...hydrateHistory(hydratedEvents)];
-  if (!registry.has("delegate_subagents")) registry.register(createDelegateSubagentsTool({ provider, cwd }));
+  if (!registry.has("delegate_subagents")) registry.register(createDelegateSubagentsTool({ provider, cwd, processMode, workerAdapter, workerAdapterDescriptor }));
   let active;
   let closed = false;
   let closePromise;

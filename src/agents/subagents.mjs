@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
+import { createNativeWorkerRunner } from "./native-worker-runner.mjs";
 import { SandoraAgentManager, stableId } from "./manager.mjs";
 import { EventBus, runTurn } from "../runtime/turn-runtime.mjs";
 import { defineTool, NativeToolRegistry, openAiTools, toolText } from "../tools/registry.mjs";
@@ -46,9 +47,9 @@ export const delegateSubagentsTool = defineTool({
   },
 });
 
-/** Create a real bounded native worker tool sharing only the provider transport. */
-export function createDelegateSubagentsTool({ provider, cwd, maxConcurrency = MAX_WORKERS } = {}) {
-  if (!provider || typeof provider.stream !== "function") throw new TypeError("A provider is required for native delegation");
+export function createDelegateSubagentsTool({ provider, cwd, maxConcurrency = MAX_WORKERS, processMode = false, workerAdapter, workerAdapterDescriptor } = {}) {
+  if (processMode && !workerAdapter) throw new TypeError("processMode requires an explicit workerAdapter module");
+  if (!processMode && (!provider || typeof provider.stream !== "function")) throw new TypeError("A provider is required for in-process delegation");
   const workerRegistry = registerWorkerTools(new NativeToolRegistry());
   const manager = new SandoraAgentManager({
     id: "native-delegation",
@@ -56,6 +57,7 @@ export function createDelegateSubagentsTool({ provider, cwd, maxConcurrency = MA
     runStoreRoot: join(cwd, ".sandora", "tasks", "runs"),
     leaseRoot: join(cwd, ".sandora", "tasks", "leases"),
     runner: async (task, execution) => {
+      if (processMode) { const wallTimeMs = execution.budget.wallTimeMs ?? WORKER_TIMEOUT_MS; return createNativeWorkerRunner({ cwd, workerAdapter, expectedAdapter: workerAdapterDescriptor, timeoutMs: Math.max(1, wallTimeMs - 1_000) })(task, execution); }
       const messages = [
         { role: "system", content: "You are a bounded read-only Sandora worker. Use only the provided workspace observation tools. Return a concise evidence-backed report; never claim edits or process execution." },
         { role: "user", content: task },
@@ -92,7 +94,7 @@ export function createDelegateSubagentsTool({ provider, cwd, maxConcurrency = MA
           const body = task.status === "completed" ? toolText(task.result) : `${task.status}: ${task.error || "no result"}`;
           return `WORKER ${index + 1} · ${task.status}\n${body}`;
         }).join("\n\n");
-        return { content: [{ type: "text", text: output }], details: { workerCount: tasks.length, runId, native: true } };
+        return { content: [{ type: "text", text: output }], details: { workerCount: tasks.length, runId, native: true, processMode: Boolean(processMode), providerFallback: !processMode } };
       } finally {
         signal?.removeEventListener("abort", abort);
       }

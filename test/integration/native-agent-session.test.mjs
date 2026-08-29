@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createAgentSession, providerFromEnvironment } from "../../src/runtime/native-agent-session.mjs";
@@ -63,6 +63,49 @@ test("native session streams, executes tools, persists, and resumes", async () =
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("native session delegates through a durable process worker and binds adapter bytes", async () => {
+  const root = await mkdtemp(join(tmpdir(), "sandora-native-process-worker-"));
+  const sessionPath = join(root, "session.jsonl");
+  const adapterPath = join(root, "worker-adapter.mjs");
+  const adapterSource = 'export async function run(request) { return `child:${request.prompt}`; }\n';
+  await writeFile(adapterPath, adapterSource, "utf8");
+  let calls = 0;
+  const provider = { model: "fixture", async *stream({ messages }) {
+    calls += 1;
+    if (messages.at(-1)?.role === "tool") yield { type: "text_delta", delta: messages.at(-1).content };
+    else yield { type: "tool_call_delta", index: 0, id: `delegate-call-${calls}`, name: "delegate_subagents", arguments: '{"tasks":["inspect one","inspect two"]}' };
+  } };
+  try {
+    const session = await createAgentSession({ cwd: root, sessionPath, provider, registry: new NativeToolRegistry(), processMode: true, workerAdapter: "worker-adapter.mjs" });
+    const result = await session.prompt("delegate");
+    assert.match(result.message.content, /WORKER 1 · completed[\s\S]*child:inspect one/);
+    assert.match(result.message.content, /WORKER 2 · completed[\s\S]*child:inspect two/);
+    assert.equal(calls, 2);
+    await writeFile(adapterPath, 'export async function run(request) { return `changed:${request.prompt}`; }\n', "utf8");
+    const changed = await session.prompt("delegate after adapter change");
+    assert.match(changed.message.content, /failed[\s\S]*worker adapter changed after session creation/);
+    await writeFile(adapterPath, adapterSource, "utf8");
+    session.dispose();
+
+    const durable = await new JsonlSessionStore(sessionPath).replay();
+    const created = durable.find(event => event.type === "session.created");
+    assert.equal(created.payload.workerMode, "process");
+    assert.match(created.payload.workerAdapterSha256, /^[a-f0-9]{64}$/);
+    assert.match(created.payload.workerAdapterPathSha256, /^[a-f0-9]{64}$/);
+    const runFiles = await readdir(join(root, ".sandora", "tasks", "runs"));
+    assert.equal(runFiles.length, 2);
+    const records = (await Promise.all(runFiles.map(async file => (await readFile(join(root, ".sandora", "tasks", "runs", file), "utf8")).trim().split("\n").map(JSON.parse)))).flat();
+    const terminalProcesses = records.filter(record => record.type === "event" && record.patch?.process?.childExitVerified);
+    assert.equal(terminalProcesses.length, 2);
+    assert.ok(terminalProcesses.every(record => record.patch.process.processTreeCleanupVerified === false));
+
+    const resumed = await createAgentSession({ cwd: root, sessionPath, provider: { model: "fixture", async *stream() { yield { type: "text_delta", delta: "resumed" }; } }, registry: new NativeToolRegistry(), processMode: true, workerAdapter: "worker-adapter.mjs" });
+    resumed.dispose();
+    await writeFile(adapterPath, 'export async function run(request) { return `changed:${request.prompt}`; }\n', "utf8");
+    await assert.rejects(() => createAgentSession({ cwd: root, sessionPath, provider: { model: "fixture", async *stream() {} }, registry: new NativeToolRegistry(), processMode: true, workerAdapter: "worker-adapter.mjs" }), /identity does not match/);
+  } finally { await rm(root, { recursive: true, force: true }); }
 });
 
 test("native schema denial is durable and prevents receipt claims and effects", async () => {

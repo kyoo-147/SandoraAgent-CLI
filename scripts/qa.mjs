@@ -16,22 +16,7 @@ const lock = JSON.parse(await readFile(resolve(root, "package-lock.json"), "utf8
 if (lock.lockfileVersion !== 3) throw new Error(`unsupported lockfile version: ${lock.lockfileVersion}`);
 
 const checks = [
-  [process.execPath, ["--check", "start.mjs"]],
-  [process.execPath, ["--check", "src/cli/terminal-app.mjs"]],
-  [process.execPath, ["--check", "src/cli/headless-jsonl.mjs"]],
-  [process.execPath, ["--check", "src/runtime/native-agent-session.mjs"]],
-  [process.execPath, ["--check", "src/runtime/pi-agent-session.mjs"]],
-  [process.execPath, ["--check", "src/runtime/create-session.mjs"]],
-  [process.execPath, ["--check", "src/tools/registry.mjs"]],
-  [process.execPath, ["--check", "src/tools/receipts.mjs"]],
-  [process.execPath, ["--check", "src/tools/approvals.mjs"]],
-  [process.execPath, ["--check", "scripts/receipt-worker.mjs"]],
-  [process.execPath, ["--check", "src/agents/subagents.mjs"]],
-  [process.execPath, ["--check", "src/agents/leases.mjs"]],
-  [process.execPath, ["--check", "src/agents/pi-subagents.mjs"]],
-  [process.execPath, ["--check", "src/agents/pi-writable-workers.mjs"]],
-  [process.execPath, ["--check", "src/plugins/host.mjs"]],
-  [process.execPath, ["--check", "src/plugins/runtime.mjs"]],
+  [process.execPath, ["scripts/check.mjs"]],
   [process.execPath, ["--test"]],
   [process.execPath, ["scripts/cli-smoke.mjs"]],
 ];

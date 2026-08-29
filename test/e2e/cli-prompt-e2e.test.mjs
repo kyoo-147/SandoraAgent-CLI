@@ -9,6 +9,7 @@ import { resolve } from "node:path";
 const root = resolve(import.meta.dirname, "../..");
 const entrypoint = resolve(root, "start.mjs");
 const delay = ms => new Promise(resolveDelay => setTimeout(resolveDelay, ms));
+const removeWorkspace = path => rm(path, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
 const visible = output => output.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "");
 
 async function waitFor(predicate, message, timeoutMs = 10_000) {
@@ -68,7 +69,7 @@ test("CLI streams a real local provider response from an arbitrary workspace and
   } finally {
     if (cli.child.exitCode === null) cli.child.kill();
     await closeServer(fixture.server);
-    await rm(cwd, { recursive: true, force: true });
+    await removeWorkspace(cwd);
   }
 });
 
@@ -92,7 +93,7 @@ test("CLI Ctrl+C aborts an active provider request without exiting", { timeout: 
   } finally {
     if (cli.child.exitCode === null) cli.child.kill();
     await closeServer(fixture.server);
-    await rm(cwd, { recursive: true, force: true });
+    await removeWorkspace(cwd);
   }
 });
 
@@ -110,7 +111,7 @@ test("CLI /quit during streaming aborts the provider and exits cleanly", { timeo
   } finally {
     if (cli.child.exitCode === null) cli.child.kill();
     await closeServer(fixture.server);
-    await rm(cwd, { recursive: true, force: true });
+    await removeWorkspace(cwd);
   }
 });
 
@@ -135,6 +136,6 @@ test("CLI hydrates the visible conversation after native session restart", { tim
     if (first?.child.exitCode === null) first.child.kill();
     if (resumed?.child.exitCode === null) resumed.child.kill();
     await closeServer(fixture.server);
-    await rm(cwd, { recursive: true, force: true });
+    await removeWorkspace(cwd);
   }
 });

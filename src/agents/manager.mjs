@@ -24,6 +24,12 @@ function stableId(prefix, value) {
   return `${prefix}-${createHash("sha256").update(String(value)).digest("hex").slice(0, 16)}`;
 }
 
+function normalizeProcessEvidence(value) {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || !Number.isSafeInteger(value.pid) || value.pid < 1 || typeof value.spawnedAt !== "string" || !Number.isFinite(Date.parse(value.spawnedAt)) || typeof value.entrypoint !== "string" || value.entrypoint.length > 1_024 || typeof value.childExitVerified !== "boolean" || typeof value.processTreeCleanupVerified !== "boolean") throw new Error("invalid worker process evidence");
+  return cloneAndFreeze({ pid: value.pid, spawnedAt: value.spawnedAt, entrypoint: value.entrypoint, childExitVerified: value.childExitVerified, processTreeCleanupVerified: value.processTreeCleanupVerified, ...(value.exitCode === null || Number.isInteger(value.exitCode) ? { exitCode: value.exitCode } : {}), ...(value.exitSignal === null || typeof value.exitSignal === "string" ? { exitSignal: value.exitSignal } : {}), ...(Number.isSafeInteger(value.stderrBytes) && value.stderrBytes >= 0 ? { stderrBytes: value.stderrBytes } : {}), ...(/^[a-f0-9]{64}$/.test(value.stderrSha256 || "") ? { stderrSha256: value.stderrSha256 } : {}) });
+}
+
 function normalizeTask(task, index) {
   if (typeof task === "string") task = { prompt: task };
   if (!task || typeof task !== "object") throw new TypeError("each task must be an object or string");
@@ -100,7 +106,7 @@ export class SandoraAgentManager extends EventEmitter {
     if (!this.runStore) throw new Error("run store is not configured");
     if (this.runs.has(runId)) return this.runs.get(runId).promise;
     const saved = await this.runStore.read(runId); if (!saved) throw new Error(`Unknown run: ${runId}`);
-    const tasks = saved.tasks.map(task => ({ ...task, controller: undefined }));
+    const tasks = saved.tasks.map(task => ({ ...task, process: normalizeProcessEvidence(task.process), controller: undefined }));
     const run = this.#newRun(runId, tasks, saved.identity); if (runner) run.runner = runner;
     run.queue = tasks; this.runs.set(runId, run);
     for (const task of tasks.filter(task => task.status === "running")) { task.status = "blocked"; task.error = "RECONCILE_REQUIRED: task was running when manager stopped"; await this.runStore.event(runId, { agentId: task.agentId, patch: { status: task.status, error: task.error } }); }
@@ -109,7 +115,7 @@ export class SandoraAgentManager extends EventEmitter {
 
   async #persist(run, task) {
     if (!this.runStore) return;
-    const snapshot = { agentId: task.agentId, patch: { status: task.status, attempts: task.attempts, error: task.error, result: task.status === "completed" ? task.result : undefined, artifacts: task.artifacts } };
+    const snapshot = { agentId: task.agentId, patch: { status: task.status, attempts: task.attempts, error: task.error, result: task.status === "completed" ? task.result : undefined, artifacts: task.artifacts, dispatchIntentAt: task.dispatchIntentAt, process: task.process } };
     const operation = run.persistence.then(() => run.storeReady).then(() => this.runStore.event(run.id, snapshot));
     run.persistence = operation.catch(error => { run.persistenceError ??= error; });
     await operation;
@@ -185,10 +191,11 @@ export class SandoraAgentManager extends EventEmitter {
       this.#emit(run, task);
       return;
     }
-    task.status = "running"; task.attempts += 1; await this.#persist(run, task); run.active += 1; run.unsettled += 1; this.#emit(run, task);
+    task.status = "running"; task.attempts += 1; task.dispatchIntentAt = new Date().toISOString(); await this.#persist(run, task); run.active += 1; run.unsettled += 1; this.#emit(run, task);
     const controller = new AbortController(); task.controller = controller;
     const abort = () => controller.abort(); run.controller.signal.addEventListener("abort", abort, { once: true });
-    const budget = budgetFor(task); const execution = Object.freeze({ agentId: task.agentId, runId: run.id, fenceToken: lease?.fenceToken, config: cloneAndFreeze(task.config ?? {}), context: cloneAndFreeze(task.context ?? {}), tools: cloneAndFreeze(task.tools ?? []), model: task.model, budget: cloneAndFreeze(budget), signal: controller.signal });
+    const reportProcess = async process => { if (task.controller !== controller || task.status !== "running") return false; task.process = normalizeProcessEvidence(process); await this.#persist(run, task); this.#emit(run, task); return true; };
+    const budget = budgetFor(task); const execution = Object.freeze({ agentId: task.agentId, taskId: task.key, attemptId: `${task.agentId}-attempt-${task.attempts}`, attempt: task.attempts, runId: run.id, fenceToken: lease?.fenceToken, config: cloneAndFreeze(task.config ?? {}), context: cloneAndFreeze(task.context ?? {}), tools: cloneAndFreeze(task.tools ?? []), model: task.model, budget: cloneAndFreeze(budget), signal: controller.signal, reportProcess });
     const runnerPromise = Promise.resolve().then(() => run.runner(task.prompt ?? task.task ?? task.key, execution));
     runnerPromise.then(() => {}, () => {});
     let timer; let outcome;
@@ -196,6 +203,8 @@ export class SandoraAgentManager extends EventEmitter {
     const cancellation = new Promise((resolve) => { if (controller.signal.aborted) resolve({ kind: "cancel" }); else controller.signal.addEventListener("abort", () => { setTimeout(() => resolve({ kind: "cancel" }), this.cancellationTimeoutMs); }, { once: true }); });
     try {
       outcome = await Promise.race([runnerPromise.then((value) => ({ kind: "result", value }), (error) => ({ kind: "error", error })), ...(timeout ? [timeout] : []), cancellation]);
+      const observedProcess = outcome.value?.process ?? outcome.error?.process;
+      if (observedProcess) task.process = normalizeProcessEvidence(observedProcess);
       if (outcome.kind === "result" && !controller.signal.aborted && !run.cancelled) { task.status = "completed"; task.result = outcome.value?.result ?? outcome.value; task.artifacts = Array.isArray(outcome.value?.artifacts) ? outcome.value.artifacts : []; }
       else if (outcome.kind === "error" && !controller.signal.aborted && !run.cancelled) { task.status = "failed"; task.error = outcome.error instanceof Error ? outcome.error.message : String(outcome.error); }
       else { task.status = "cancelled"; task.error = outcome.kind === "timeout" ? `wall-time budget exceeded (${budget.wallTimeMs}ms)` : "cancelled"; controller.abort(); }
@@ -210,7 +219,7 @@ export class SandoraAgentManager extends EventEmitter {
   }
 
   #emit(run, task) { this.emit("status", this.#snapshot(task), this.status(run.id)); }
-  #snapshot(task) { if (!task) return undefined; return cloneAndFreeze({ agentId: task.agentId, key: task.key, dependencies: task.dependencies, status: task.status, attempts: task.attempts, error: task.error, artifacts: task.artifacts, result: task.status === "completed" ? task.result : undefined }); }
+  #snapshot(task) { if (!task) return undefined; return cloneAndFreeze({ agentId: task.agentId, key: task.key, dependencies: task.dependencies, status: task.status, attempts: task.attempts, error: task.error, artifacts: task.artifacts, process: task.process, dispatchIntentAt: task.dispatchIntentAt, result: task.status === "completed" ? task.result : undefined }); }
 }
 
 export function createAgentManager(options) { return new SandoraAgentManager(options); }

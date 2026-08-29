@@ -13,12 +13,13 @@ Sandora is becoming an independent production-grade autonomous agent platform wi
 ## Repository custody
 
 - Latest pushed commit: `da531e6 feat(tools): enforce schema and policy decisions`.
+- Latest local commit: `8474339 docs(architecture): define modular platform migration`.
 - Earlier native milestones: `d4a09fa`, `4109865`, `ec8e639`, `bc74fb2`.
 - Open PR previously observed: #11; CI jobs had failed with zero steps due an account lock, not test execution.
 - Unrelated untracked content to preserve: `.commandcode/`, `company-site/`.
 - Runtime-generated `.sandora/` is ignored and is not durable project documentation.
 
-## Current uncommitted implementation WIP
+## Current implementation milestone awaiting commit
 
 Native process-worker slice (pre-dates architecture rewrite):
 
@@ -40,27 +41,28 @@ Implemented in this WIP:
 - manager dispatch/process evidence hooks and durable snapshots;
 - truthful `childExitVerified` and `processTreeCleanupVerified:false`.
 
-Do not discard or accidentally omit the four untracked WIP files. Do not claim adapter code is sandboxed.
+The milestone now also uses automatic syntax discovery, binds sessions to canonical adapter path and exact bytes, executes the verified adapter bytes from an in-memory data URL, blocks adapter drift during an active session, preserves spawn errors as durable failed tasks, validates protocol output caps, and tests process-mode session/restart behavior. Do not discard or accidentally omit the untracked milestone files. Do not claim adapter code is sandboxed or descendant cleanup is proven.
 
 ## Audit findings and next defects
 
-1. `package.json` and `scripts/qa.mjs` omit native worker production entrypoints from syntax gates.
-2. No integration test creates a native session in process-worker mode and executes `delegate_subagents` through restart identity/persistence.
-3. Worker adapter identity currently hashes configured path text, not resolved adapter bytes.
-4. Descendant process cleanup is not verified; direct-child exit only.
-5. Pi remains the default core and a startup dependency, including worker-model availability.
-6. Real Pi tests (4) and real CDP tests (5) are configured but skipped without environment/credentials.
-7. The repository has no package/workspace boundaries yet; several modules mix multiple target responsibilities.
-8. Current tests are strong local mechanics evidence, not final product completion.
+1. Descendant process cleanup is not verified; direct-child exit only. Windows Job Object/POSIX process-group backends remain future work.
+2. Process adapters are trusted, self-contained modules; process separation is not a hostile-code sandbox.
+3. Pi remains the default core and a startup dependency, including worker-model availability.
+4. Real Pi tests (4) and real CDP tests (5) are configured but skipped without environment/credentials.
+5. The repository has no package/workspace boundaries yet; several modules mix multiple target responsibilities.
+6. Current tests are strong local mechanics evidence, not final product completion.
 
 ## Test status
 
-Most recent parent validation after WIP:
+Most recent parent validation after review fixes:
 
-- `npm run check`: PASS.
-- `npm test`: PASS, 180 total / 171 pass / 0 fail / 9 skip.
-- `npm run qa`: one Windows `EBUSY` cleanup failure in `CLI Ctrl+C aborts...` while `npm test` and `npm run qa` were run concurrently. This was an invalid concurrent validation pattern for shared OS resources.
-- isolated rerun `node --test test/e2e/cli-prompt-e2e.test.mjs`: PASS 4/4.
+- `npm run check`: PASS, automatic discovery checked 34 production/script files.
+- focused native worker/session tests after review fixes: PASS 25/25.
+- `npm test`: PASS, 183 total / 174 pass / 0 fail / 9 environment-gated skips.
+- `npm run qa`: PASS with the same 183-test result plus CLI smoke and fixture cleanup.
+- `npm run qa:deps`: PASS, 0 vulnerabilities.
+- `git diff --check`: PASS (only expected Git line-ending conversion warnings).
+- Windows temp cleanup now uses bounded `fs.rm` retries after a reproducible full-suite-only `EBUSY`; the isolated test and full suite both pass. Do not run shared OS E2E suites concurrently.
 
 Required next validation: after fixes, run focused tests, `npm run check`, `npm test`, and `npm run qa` **sequentially**. Record real-provider/browser skips honestly.
 
@@ -73,16 +75,9 @@ Required next validation: after fixes, run focused tests, `npm run check`, `npm 
 
 ## Immediate next work
 
-1. Review and commit architecture/state docs without staging unrelated/WIP files.
-2. Complete native process-worker slice:
-   - authoritative QA discovery;
-   - session-level process-mode E2E/restart test;
-   - resolved adapter content identity;
-   - process evidence restore assertions.
-3. Run focused/full/QA sequentially and review the complete WIP diff.
-4. Commit/push the native worker milestone separately.
-5. Establish npm workspace/package foundation and migrate protocol/session/agent vertical slice with compatibility re-exports.
-6. Make native core default, quarantine Pi under a migration adapter, then prove a clean install without Pi.
+1. Review the complete diff, commit and push the native worker milestone separately.
+2. Establish npm workspace/package foundation and migrate protocol/session/agent vertical slice with compatibility re-exports.
+3. Make native core default, quarantine Pi under a migration adapter, then prove a clean install without Pi.
 
 ## Blockers
 

@@ -81,6 +81,8 @@ The generic `SandoraAgentManager` accepts an optional shared `leaseRoot` for fil
 
 Read-only native and Pi delegation also persist a normalized run manifest and fsync-backed task transitions under `.sandora/tasks/runs`, paired with leases under `.sandora/tasks/leases`. Completed results and cancellation state can be restored without replay; a task found `running` after restart becomes `RECONCILE_REQUIRED` and is not executed automatically. This is local crash recovery, not distributed scheduling, artifact-integrity proof, or exactly-once execution.
 
+Native delegation can opt into a separate Sandora child process with `SANDORA_NATIVE_WORKER_MODE=process` and an explicit workspace-contained `SANDORA_NATIVE_WORKER_ADAPTER`. The adapter is trusted executable code, must be a self-contained ESM module (relative imports are unsupported), and is bound to the session by its canonical path and exact bytes. The child executes a verified in-memory snapshot of those bytes, receives only the read-only worker registry and a filtered environment, and communicates through one bounded request/result JSONL exchange. Sandora persists spawn and direct-child exit evidence; it deliberately reports `processTreeCleanupVerified: false` because descendant cleanup is not yet enforced by a Windows Job Object or POSIX process group. This mode is process separation and cancellation, not a hostile-code sandbox.
+
 ## Commands
 
 Type `/` in the CLI to open command completion.

@@ -44,12 +44,15 @@ test("restored in-flight task becomes reconcile-required without execution", asy
     const store = new FileTaskRunStore({ root });
     const task = { key: "active", agentId: "agent-active", dependencies: [], status: "queued", attempts: 0, prompt: "side effect", artifacts: [] };
     await store.create({ runId: "interrupted", identity: "identity", tasks: [task] });
-    await store.event("interrupted", { agentId: task.agentId, patch: { status: "running", attempts: 1 } });
+    const process = { pid: 4242, spawnedAt: "2026-08-29T00:00:00.000Z", entrypoint: "scripts/native-worker.mjs", childExitVerified: false, processTreeCleanupVerified: false };
+    await store.event("interrupted", { agentId: task.agentId, patch: { status: "running", attempts: 1, dispatchIntentAt: "2026-08-29T00:00:00.000Z", process } });
     let calls = 0;
     const manager = new SandoraAgentManager({ runStore: store, runner: async () => { calls += 1; } });
     const restored = await manager.restore("interrupted");
     assert.equal(restored.tasks[0].status, "blocked");
     assert.match(restored.tasks[0].error, /RECONCILE_REQUIRED/);
+    assert.deepEqual(restored.tasks[0].process, process);
+    assert.equal(restored.tasks[0].dispatchIntentAt, "2026-08-29T00:00:00.000Z");
     assert.equal(calls, 0);
     assert.match((await store.read("interrupted")).tasks[0].error, /RECONCILE_REQUIRED/);
   } finally { await rm(root, { recursive: true, force: true }); }
